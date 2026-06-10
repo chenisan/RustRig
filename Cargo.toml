@@ -1,0 +1,24 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+version = "0.0.1"
+license = "MIT"
+authors = ["13soul"]
+
+# 共享依賴版本（各 crate 以 workspace = true 引用）
+[workspace.dependencies]
+rustrig-dsp = { path = "crates/rustrig-dsp" }
+rustrig-audio = { path = "crates/rustrig-audio" }
+
+# 釋出檔用最佳化 + 不要 panic=abort（音訊 thread 要能 unwind 清理）
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+# dev 也開最佳化：DSP 沒最佳化會即時跑不動
+[profile.dev]
+opt-level = 1

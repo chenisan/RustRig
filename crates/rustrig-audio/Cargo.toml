@@ -1,0 +1,28 @@
+[package]
+name = "rustrig-audio"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rustrig-dsp = { workspace = true }
+thiserror = "2"
+rtrb = "0.3"            # lock-free SPSC ring：capture/render 雙工交接
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",                  # IMMDeviceEnumerator / IAudioClient(3) / Capture / Render
+    "Win32_Media_KernelStreaming",        # WAVE_FORMAT_EXTENSIBLE
+    "Win32_System_Com",                   # CoCreateInstance / CoInitializeEx
+    "Win32_System_Com_StructuredStorage", # PROPVARIANT（裝置列舉）
+    "Win32_System_Variant",
+    "Win32_System_Threading",             # CreateEventW / WaitForSingleObject / MMCSS
+    "Win32_Security",                     # SECURITY_ATTRIBUTES（CreateEventW 需要）
+    "Win32_Devices_FunctionDiscovery",    # PKEY_Device_FriendlyName
+    "Win32_UI_Shell_PropertiesSystem",    # IPropertyStore / PROPERTYKEY
+] }
+
+# WASAPI / MMCSS 後端：windows crate 在寫實作那步 cargo add（含 audio features）
+# ASIO 後端 feature-gated，需 ASIO SDK + libclang，預設不編
+[features]
+default = []
+asio = []
