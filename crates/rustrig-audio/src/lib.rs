@@ -10,9 +10,11 @@
 //! 就是 drift / jitter 緩衝。
 
 pub mod backend;
+pub mod devices;
 pub mod ring;
 pub mod rt;
 pub mod wasapi;
 
 pub use backend::{AudioBackend, BackendError, LatencyInfo, RunningStream, StreamConfig};
+pub use devices::{DeviceInfo, DeviceLists, enumerate};
 pub use wasapi::WasapiShared;

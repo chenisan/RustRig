@@ -11,7 +11,9 @@ mod widgets;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, CornerRadius, FontId, Margin, RichText, Stroke};
-use rustrig_audio::{AudioBackend, LatencyInfo, RunningStream, StreamConfig, WasapiShared};
+use rustrig_audio::{
+    AudioBackend, DeviceLists, LatencyInfo, RunningStream, StreamConfig, WasapiShared,
+};
 use rustrig_dsp::{CabIr, Chain, Drive, Gain, MeterHandle, PeakMeter, SharedParam};
 use widgets as w;
 
@@ -65,7 +67,25 @@ struct RigApp {
     ir: Option<(Vec<f32>, u32)>,
     ir_name: Option<String>,
 
+    // ── 裝置選擇 ──
+    devices: DeviceLists,
+    /// None = 系統預設
+    sel_capture: Option<String>,
+    sel_render: Option<String>,
+
     ghosts: Vec<GhostKnob>,
+}
+
+/// ComboBox 顯示用：依選擇的 ID 找名稱。
+fn device_label(list: &[rustrig_audio::DeviceInfo], sel: &Option<String>) -> String {
+    match sel {
+        None => "系統預設".into(),
+        Some(id) => list
+            .iter()
+            .find(|d| &d.id == id)
+            .map(|d| d.name.clone())
+            .unwrap_or_else(|| "（裝置已移除）".into()),
+    }
 }
 
 /// 0..1 → 800..8000 Hz（一個 decade 的對數刻度）
@@ -96,6 +116,9 @@ impl RigApp {
             cab_on: true,
             ir: None,
             ir_name: None,
+            devices: rustrig_audio::enumerate().unwrap_or_default(),
+            sel_capture: None,
+            sel_render: None,
             ghosts: vec![
                 GhostKnob { label: "GATE", accent: w::PINK, value: 0.3 },
                 GhostKnob { label: "REVERB", accent: w::GREEN, value: 0.25 },
@@ -115,9 +138,12 @@ impl RigApp {
         }
         chain.push(Box::new(Gain::new(self.volume.clone())));
         chain.push(Box::new(PeakMeter::new(self.meter.clone())));
-        match WasapiShared::open(StreamConfig::default())
-            .and_then(|b| b.run(Box::new(chain)))
-        {
+        let config = StreamConfig {
+            capture_id: self.sel_capture.clone(),
+            render_id: self.sel_render.clone(),
+            ..Default::default()
+        };
+        match WasapiShared::open(config).and_then(|b| b.run(Box::new(chain))) {
             Ok(s) => {
                 self.latency = Some(s.latency());
                 self.stream = Some(s);
@@ -142,6 +168,62 @@ impl RigApp {
         if self.running() {
             self.stop();
             self.start();
+        }
+    }
+
+    /// 裝置選擇卡：輸入／輸出 ComboBox + 重新整理。換裝置即時生效。
+    fn device_card(&mut self, ui: &mut egui::Ui) {
+        let mut device_changed = false;
+        panel_frame().show(ui, |ui| {
+            let combo_w = ui.available_width() - 86.0;
+            for (label, sel, list) in [
+                ("輸入", &mut self.sel_capture, &self.devices.capture),
+                ("輸出", &mut self.sel_render, &self.devices.render),
+            ] {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(label).color(w::DIM).size(10.5));
+                    let before = sel.clone();
+                    egui::ComboBox::from_id_salt(label)
+                        .width(combo_w)
+                        .selected_text(
+                            RichText::new(device_label(list, sel)).size(10.5).color(w::TEXT),
+                        )
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(sel, None, "系統預設");
+                            for d in list {
+                                let name = if d.is_default {
+                                    format!("{}（預設）", d.name)
+                                } else {
+                                    d.name.clone()
+                                };
+                                ui.selectable_value(sel, Some(d.id.clone()), name);
+                            }
+                        });
+                    if *sel != before {
+                        device_changed = true;
+                    }
+                });
+            }
+            ui.horizontal(|ui| {
+                if ui
+                    .button(RichText::new("⟳ 重新整理").size(9.5))
+                    .on_hover_text("重新掃描音訊裝置")
+                    .clicked()
+                {
+                    match rustrig_audio::enumerate() {
+                        Ok(d) => self.devices = d,
+                        Err(e) => self.error = Some(format!("裝置列舉失敗：{e}")),
+                    }
+                }
+                ui.label(
+                    RichText::new("輸入輸出建議用同一台介面（共用時鐘）")
+                        .color(w::FAINT)
+                        .size(9.0),
+                );
+            });
+        });
+        if device_changed {
+            self.restart_if_running();
         }
     }
 
@@ -250,6 +332,10 @@ impl eframe::App for RigApp {
                         ui.label(RichText::new(format!("⚠ {err}")).color(w::RED).size(11.0));
                     });
                 }
+                ui.add_space(8.0);
+
+                // ── 裝置選擇卡 ──
+                self.device_card(ui);
                 ui.add_space(12.0);
 
                 // ── 主面板：channel strip + 旋鈕區 ──

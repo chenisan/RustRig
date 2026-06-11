@@ -4,11 +4,15 @@ use rustrig_dsp::AudioProcessor;
 
 /// 串流參數。`block_size` 是 **DSP 端看到的固定 block**，與裝置實際 period
 /// 解耦（中間靠 re-blocking 緩衝橋接），讓 FFT 階段永遠拿到 2 的次方大小。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct StreamConfig {
     pub sample_rate: u32,
     pub block_size: usize,
     pub channels: u16,
+    /// 擷取裝置 ID（見 [`crate::devices::enumerate`]）。`None` = 系統預設。
+    pub capture_id: Option<String>,
+    /// 輸出裝置 ID。`None` = 系統預設。
+    pub render_id: Option<String>,
 }
 
 impl Default for StreamConfig {
@@ -17,6 +21,8 @@ impl Default for StreamConfig {
             sample_rate: 48_000,
             block_size: 128,
             channels: 1,
+            capture_id: None,
+            render_id: None,
         }
     }
 }

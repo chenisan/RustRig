@@ -181,8 +181,23 @@ fn audio_thread(
     result
 }
 
+/// 依 ID 開裝置；`None` 用該方向的系統預設。
+unsafe fn get_device(
+    enumerator: &IMMDeviceEnumerator,
+    id: Option<&str>,
+    flow: windows::Win32::Media::Audio::EDataFlow,
+) -> WinResult<windows::Win32::Media::Audio::IMMDevice> {
+    match id {
+        Some(id) => {
+            let wide: Vec<u16> = id.encode_utf16().chain(std::iter::once(0)).collect();
+            unsafe { enumerator.GetDevice(PCWSTR(wide.as_ptr())) }
+        }
+        None => unsafe { enumerator.GetDefaultAudioEndpoint(flow, eConsole) },
+    }
+}
+
 unsafe fn run_inner(
-    _config: StreamConfig, // shared 模式參數由 mix format 決定；升 IAudioClient3 後會用到
+    config: StreamConfig, // 取樣率/block 由 mix format 決定（升 IAudioClient3 後會用到）；裝置 ID 在此生效
     processor: &mut dyn AudioProcessor,
     stop: &AtomicBool,
     xruns: &AtomicU64,
@@ -192,7 +207,7 @@ unsafe fn run_inner(
         unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
 
     // ── capture（吉他輸入）：poll 模式，不掛 event ──
-    let cap_dev = unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eConsole)? };
+    let cap_dev = unsafe { get_device(&enumerator, config.capture_id.as_deref(), eCapture)? };
     let cap_client: IAudioClient = unsafe { cap_dev.Activate(CLSCTX_ALL, None)? };
     let cap_pwfx = unsafe { cap_client.GetMixFormat()? };
     if !unsafe { is_float32(cap_pwfx) } {
@@ -208,7 +223,7 @@ unsafe fn run_inner(
     let cap_service: IAudioCaptureClient = unsafe { cap_client.GetService()? };
 
     // ── render（喇叭輸出）：event 驅動 ──
-    let rnd_dev = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole)? };
+    let rnd_dev = unsafe { get_device(&enumerator, config.render_id.as_deref(), eRender)? };
     let rnd_client: IAudioClient = unsafe { rnd_dev.Activate(CLSCTX_ALL, None)? };
     let rnd_pwfx = unsafe { rnd_client.GetMixFormat()? };
     if !unsafe { is_float32(rnd_pwfx) } {
