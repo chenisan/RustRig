@@ -5,10 +5,15 @@ version.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "rustrig"
+name = "rustrig"          # GUI 主程式
 path = "src/main.rs"
+
+[[bin]]
+name = "rustrig-probe"    # 命令列延遲探針（P0 驗收工具）
+path = "src/bin/probe.rs"
 
 [dependencies]
 rustrig-dsp = { workspace = true }
 rustrig-audio = { workspace = true }
 anyhow = "1"
+eframe = "0.34.3"

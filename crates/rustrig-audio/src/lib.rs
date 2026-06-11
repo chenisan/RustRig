@@ -14,5 +14,5 @@ pub mod ring;
 pub mod rt;
 pub mod wasapi;
 
-pub use backend::{AudioBackend, BackendError, LatencyInfo, StreamConfig};
+pub use backend::{AudioBackend, BackendError, LatencyInfo, RunningStream, StreamConfig};
 pub use wasapi::WasapiShared;
