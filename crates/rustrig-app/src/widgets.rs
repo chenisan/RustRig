@@ -238,13 +238,13 @@ pub fn channel_strip(
         *gain_lin = 1.0;
         db = 0.0;
         changed = true;
-    } else if resp.dragged() || resp.clicked() {
-        if let Some(pos) = resp.interact_pointer_pos() {
-            let frac = (1.0 - (pos.y - top) / h).clamp(0.0, 1.0);
-            db = BOT_DB + frac * DB_RANGE;
-            *gain_lin = db_to_gain(db);
-            changed = true;
-        }
+    } else if (resp.dragged() || resp.clicked())
+        && let Some(pos) = resp.interact_pointer_pos()
+    {
+        let frac = (1.0 - (pos.y - top) / h).clamp(0.0, 1.0);
+        db = BOT_DB + frac * DB_RANGE;
+        *gain_lin = db_to_gain(db);
+        changed = true;
     }
     let fader_frac = db_to_frac(db);
     let zero_y = top + (1.0 - db_to_frac(0.0)) * h;
@@ -410,6 +410,36 @@ pub fn play_button(ui: &mut Ui, running: bool) -> Response {
         ));
     }
     resp.on_hover_text(if running { "停止引擎" } else { "啟動引擎" })
+}
+
+/// 踏板式 LED 開關：圓角膠囊 + 發光指示燈。回傳 Response（用 clicked 切換）。
+pub fn led_toggle(ui: &mut Ui, label: &str, on: bool, accent: Color32) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(76.0, 24.0), Sense::click());
+    let p = ui.painter();
+    p.rect_filled(
+        rect,
+        CornerRadius::same(12),
+        if on { with_alpha(accent, 26) } else { Color32::from_rgb(24, 24, 28) },
+    );
+    p.rect_stroke(
+        rect,
+        CornerRadius::same(12),
+        Stroke::new(1.0, if on { accent } else { PANEL_EDGE }),
+        StrokeKind::Inside,
+    );
+    let led = pos2(rect.left() + 13.0, rect.center().y);
+    if on {
+        p.circle_filled(led, 5.5, with_alpha(accent, 70));
+    }
+    p.circle_filled(led, 3.0, if on { accent } else { Color32::from_rgb(50, 50, 56) });
+    p.text(
+        pos2(rect.left() + 24.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        label,
+        FontId::proportional(10.5),
+        if on { TEXT } else { DIM },
+    );
+    resp.on_hover_cursor(eframe::egui::CursorIcon::PointingHand)
 }
 
 /// 海報式分隔標題：左紫線 ─ 文字 ─ 右洋紅線。

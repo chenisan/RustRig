@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, CornerRadius, FontId, Margin, RichText, Stroke};
 use rustrig_audio::{AudioBackend, LatencyInfo, RunningStream, StreamConfig, WasapiShared};
-use rustrig_dsp::{Chain, Gain, MeterHandle, PeakMeter, SharedParam};
+use rustrig_dsp::{CabIr, Chain, Drive, Gain, MeterHandle, PeakMeter, SharedParam};
 use widgets as w;
 
 fn main() -> eframe::Result {
@@ -29,7 +29,7 @@ fn main() -> eframe::Result {
     )
 }
 
-/// 佔位旋鈕（之後 P2/P3 點亮成真效果）。
+/// 佔位旋鈕（之後 P1/P3 點亮成真效果）。
 struct GhostKnob {
     label: &'static str,
     accent: Color32,
@@ -50,7 +50,27 @@ struct RigApp {
     disp_db: f32,
     clip_until: Option<Instant>,
 
+    // ── 破音 ──
+    drive_db_v: f32,
+    tone_norm: f32, // 0..1 → 800..8000 Hz（對數）
+    drive_db: SharedParam,
+    tone_hz: SharedParam,
+    drive_on_p: SharedParam,
+    drive_on: bool,
+
+    // ── IR cab ──
+    cab_on_p: SharedParam,
+    cab_on: bool,
+    /// (樣本, 檔案取樣率)；換 IR 需重建 chain（運轉中會自動重啟引擎）
+    ir: Option<(Vec<f32>, u32)>,
+    ir_name: Option<String>,
+
     ghosts: Vec<GhostKnob>,
+}
+
+/// 0..1 → 800..8000 Hz（一個 decade 的對數刻度）
+fn tone_norm_to_hz(norm: f32) -> f32 {
+    800.0 * 10f32.powf(norm.clamp(0.0, 1.0))
 }
 
 impl RigApp {
@@ -66,10 +86,18 @@ impl RigApp {
             meter: MeterHandle::new(),
             disp_db: -80.0,
             clip_until: None,
+            drive_db_v: 18.0,
+            tone_norm: 0.55,
+            drive_db: SharedParam::new(18.0),
+            tone_hz: SharedParam::new(tone_norm_to_hz(0.55)),
+            drive_on_p: SharedParam::new(1.0),
+            drive_on: true,
+            cab_on_p: SharedParam::new(1.0),
+            cab_on: true,
+            ir: None,
+            ir_name: None,
             ghosts: vec![
                 GhostKnob { label: "GATE", accent: w::PINK, value: 0.3 },
-                GhostKnob { label: "DRIVE", accent: w::AMBER, value: 0.5 },
-                GhostKnob { label: "TONE", accent: w::CYAN, value: 0.6 },
                 GhostKnob { label: "REVERB", accent: w::GREEN, value: 0.25 },
             ],
         }
@@ -77,6 +105,14 @@ impl RigApp {
 
     fn start(&mut self) {
         let mut chain = Chain::new();
+        chain.push(Box::new(Drive::new(
+            self.drive_db.clone(),
+            self.tone_hz.clone(),
+            self.drive_on_p.clone(),
+        )));
+        if let Some((raw, sr)) = &self.ir {
+            chain.push(Box::new(CabIr::new(raw.clone(), *sr, self.cab_on_p.clone())));
+        }
         chain.push(Box::new(Gain::new(self.volume.clone())));
         chain.push(Box::new(PeakMeter::new(self.meter.clone())));
         match WasapiShared::open(StreamConfig::default())
@@ -100,17 +136,73 @@ impl RigApp {
     fn running(&self) -> bool {
         self.stream.is_some()
     }
+
+    /// 換 IR / 重建 chain 用：運轉中就無縫重啟。
+    fn restart_if_running(&mut self) {
+        if self.running() {
+            self.stop();
+            self.start();
+        }
+    }
+
+    fn pick_ir(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("脈衝響應 WAV", &["wav"])
+            .pick_file()
+        else {
+            return;
+        };
+        match load_ir_wav(&path) {
+            Ok((samples, sr)) => {
+                self.ir = Some((samples, sr));
+                self.ir_name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned());
+                self.cab_on = true;
+                self.cab_on_p.set(1.0);
+                self.error = None;
+                self.restart_if_running();
+            }
+            Err(e) => self.error = Some(format!("IR 載入失敗：{e}")),
+        }
+    }
+}
+
+/// 讀 IR wav：取第 0 聲道，int 格式正規化到 ±1.0。
+fn load_ir_wav(path: &std::path::Path) -> Result<(Vec<f32>, u32), String> {
+    let mut reader = hound::WavReader::open(path).map_err(|e| e.to_string())?;
+    let spec = reader.spec();
+    let ch = spec.channels.max(1) as usize;
+    let samples: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader
+            .samples::<f32>()
+            .step_by(ch)
+            .map(|s| s.unwrap_or(0.0))
+            .collect(),
+        hound::SampleFormat::Int => {
+            let norm = 1.0 / (1i64 << (spec.bits_per_sample - 1)) as f32;
+            reader
+                .samples::<i32>()
+                .step_by(ch)
+                .map(|s| s.unwrap_or(0) as f32 * norm)
+                .collect()
+        }
+    };
+    if samples.is_empty() {
+        return Err("檔案沒有樣本".into());
+    }
+    Ok((samples, spec.sample_rate))
 }
 
 impl eframe::App for RigApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         // 引擎活性監看：執行緒死掉（拔裝置等）要立即反映，不能默默裝沒事
-        if let Some(s) = &self.stream {
-            if !s.is_alive() {
-                self.error = Some("音訊執行緒已停止（裝置被拔除或驅動錯誤）".into());
-                self.stop();
-            }
+        if let Some(s) = &self.stream
+            && !s.is_alive()
+        {
+            self.error = Some("音訊執行緒已停止（裝置被拔除或驅動錯誤）".into());
+            self.stop();
         }
 
         // 峰值表 ballistics：瞬間上衝、30 dB/s 下落
@@ -171,25 +263,59 @@ impl eframe::App for RigApp {
                         ui.separator();
                         ui.add_space(10.0);
                         ui.vertical(|ui| {
-                            ui.add_space(18.0);
+                            ui.add_space(10.0);
+                            // ── 第一排：破音雙旋鈕（live）──
                             ui.horizontal(|ui| {
-                                for g in &mut self.ghosts[..2] {
+                                if w::knob(ui, "DRIVE", &mut self.drive_db_v, 0.0, 40.0, 18.0, w::AMBER, true, &|v| {
+                                    format!("{v:.0}dB")
+                                }) {
+                                    self.drive_db.set(self.drive_db_v);
+                                }
+                                if w::knob(ui, "TONE", &mut self.tone_norm, 0.0, 1.0, 0.55, w::CYAN, true, &|v| {
+                                    let hz = tone_norm_to_hz(v);
+                                    if hz >= 1000.0 { format!("{:.1}k", hz / 1000.0) } else { format!("{hz:.0}Hz") }
+                                }) {
+                                    self.tone_hz.set(tone_norm_to_hz(self.tone_norm));
+                                }
+                            });
+                            // ── 第二排：佔位（GATE / REVERB）──
+                            ui.horizontal(|ui| {
+                                for g in &mut self.ghosts {
                                     w::knob(ui, g.label, &mut g.value, 0.0, 1.0, 0.5, g.accent, false, &|v| {
                                         format!("{:.0}%", v * 100.0)
                                     });
                                 }
                             });
                             ui.add_space(6.0);
+                            // ── 開關列 ──
                             ui.horizontal(|ui| {
-                                for g in &mut self.ghosts[2..] {
-                                    w::knob(ui, g.label, &mut g.value, 0.0, 1.0, 0.5, g.accent, false, &|v| {
-                                        format!("{:.0}%", v * 100.0)
-                                    });
+                                ui.add_space(2.0);
+                                if w::led_toggle(ui, "DRIVE", self.drive_on, w::AMBER).clicked() {
+                                    self.drive_on = !self.drive_on;
+                                    self.drive_on_p.set(if self.drive_on { 1.0 } else { 0.0 });
+                                }
+                                ui.add_space(4.0);
+                                if w::led_toggle(ui, "CAB", self.cab_on, w::MAGENTA).clicked() {
+                                    self.cab_on = !self.cab_on;
+                                    self.cab_on_p.set(if self.cab_on { 1.0 } else { 0.0 });
                                 }
                             });
-                            ui.add_space(4.0);
-                            ui.vertical_centered(|ui| {
-                                ui.label(RichText::new("效果鏈 P1-P3 點亮").color(w::FAINT).size(9.0));
+                            ui.add_space(8.0);
+                            // ── IR 載入列 ──
+                            ui.horizontal(|ui| {
+                                ui.add_space(2.0);
+                                if ui
+                                    .button(RichText::new("載入 IR…").size(10.5))
+                                    .on_hover_text("選一個喇叭箱體脈衝響應 .wav")
+                                    .clicked()
+                                {
+                                    self.pick_ir();
+                                }
+                                let (name, col) = match &self.ir_name {
+                                    Some(n) => (n.as_str(), w::CYAN),
+                                    None => ("未載入（CAB 不作用）", w::FAINT),
+                                };
+                                ui.label(RichText::new(name).color(col).size(9.5));
                             });
                         });
                     });

@@ -5,3 +5,4 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+fft-convolver = "0.3.0"
