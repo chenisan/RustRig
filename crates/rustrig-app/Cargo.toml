@@ -21,5 +21,7 @@ hound = "3.5.1"
 rfd = "0.17.2"
 
 [features]
-# 啟用 ASIO 後端（需 ASIO SDK + libclang，見 .cargo/config.toml）。
+# ASIO 後端預設開（這台已備妥 ASIO SDK + libclang，見 .cargo/config.toml）。
+# 乾淨環境若無 ASIO 工具鏈，用 --no-default-features 編出純 WASAPI 版。
+default = ["asio"]
 asio = ["rustrig-audio/asio"]
