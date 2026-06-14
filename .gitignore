@@ -5,3 +5,6 @@
 
 # 本機專屬建置設定（含 machine-specific 路徑：CPAL_ASIO_DIR / LIBCLANG_PATH）
 /.cargo/config.toml
+
+# 打包輸出
+/dist/

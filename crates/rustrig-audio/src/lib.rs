@@ -39,7 +39,9 @@ pub fn open_stream(
         BackendKind::Asio => asio::AsioBackend::open(config)?.run(processor),
         #[cfg(not(feature = "asio"))]
         BackendKind::Asio => Err(BackendError::Os(
-            "ASIO 後端未編譯（請以 --features asio 重新編譯）".into(),
+            "此版本未內建 ASIO（Steinberg 授權因素無法隨附）。先用「WASAPI 獨佔」即可約 12ms；\
+             想要 ASIO 最低延遲（3-7ms）請自行從原始碼編譯：裝好 ASIO SDK 後以 --features asio build，詳見 README。"
+                .into(),
         )),
     }
 }

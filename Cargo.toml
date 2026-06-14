@@ -4,8 +4,8 @@ members = ["crates/*"]
 
 [workspace.package]
 edition = "2024"
-version = "0.0.1"
-license = "MIT"
+version = "0.1.0"
+license = "Apache-2.0"
 authors = ["13soul"]
 
 # 共享依賴版本（各 crate 以 workspace = true 引用）
