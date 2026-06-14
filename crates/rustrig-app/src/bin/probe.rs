@@ -2,18 +2,19 @@
 //!
 //! 目標：插上吉他 → 直通 → 喇叭，印出實測延遲與 xrun 計數，跑數分鐘零爆音。
 //!
-//! 用法：`rustrig-probe [秒數] [裝置名稱關鍵字]`
+//! 用法：`rustrig-probe [秒數] [裝置名稱關鍵字] [後端]`
 //!   - 秒數：純數字參數，預設 10；給 0 = 跑到 Ctrl+C。
 //!   - 裝置名稱關鍵字：非數字參數，會在 in/out 兩端各挑第一個名稱含此字的裝置
 //!     （不分大小寫）。例如 `rustrig-probe 8 fireface` 量 RME UCX II。
 //!     省略時 in/out 都用系統預設裝置。
+//!   - 後端：`exclusive`（或 `ex`）走 WASAPI 獨佔；`shared` 走共享（預設）。
+//!     例如 `rustrig-probe 8 fireface ex` 量 UCX II 獨佔模式延遲。
 //!
-//! IAudioClient3 低延遲只在驅動開放小 engine period 時才有效——主機板內建音效
-//! 通常鎖在 10ms，專業介面（UCX II 等）才壓得下去，所以要用關鍵字指定。
+//! 低延遲只在獨佔模式或驅動開放小 period 時才有效——共享模式多數驅動鎖在 10ms。
 
 use std::time::Duration;
 
-use rustrig_audio::{AudioBackend, DeviceInfo, StreamConfig, WasapiShared, enumerate};
+use rustrig_audio::{BackendKind, DeviceInfo, StreamConfig, enumerate, open_stream};
 use rustrig_dsp::Passthrough;
 
 /// 在清單裡找第一個名稱含 `needle`（不分大小寫）的裝置。
@@ -38,13 +39,20 @@ fn main() -> anyhow::Result<()> {
     println!(" RustRig — WASAPI 直通延遲測試");
     println!("════════════════════════════════════════");
 
-    // 參數：數字 = 秒數，非數字 = 裝置名稱關鍵字。
+    // 參數：數字 = 秒數，後端關鍵字 = 切換後端，其餘 = 裝置名稱關鍵字。
     let mut secs: u64 = 10;
     let mut filter: Option<String> = None;
+    let mut backend = BackendKind::WasapiShared;
     for arg in std::env::args().skip(1) {
-        match arg.parse::<u64>() {
-            Ok(n) => secs = n,
-            Err(_) => filter = Some(arg),
+        let low = arg.to_lowercase();
+        if let Ok(n) = arg.parse::<u64>() {
+            secs = n;
+        } else if matches!(low.as_str(), "exclusive" | "excl" | "ex" | "獨佔") {
+            backend = BackendKind::WasapiExclusive;
+        } else if matches!(low.as_str(), "shared" | "share" | "共享") {
+            backend = BackendKind::WasapiShared;
+        } else {
+            filter = Some(arg);
         }
     }
 
@@ -76,11 +84,10 @@ fn main() -> anyhow::Result<()> {
         println!("（未指定關鍵字，in/out 用系統預設裝置）");
     }
 
-    let backend = WasapiShared::open(config)?;
-    println!("後端：{}", WasapiShared::name());
+    println!("後端：{}", backend.label());
     println!("啟動音訊引擎中…");
 
-    let stream = backend.run(Box::new(Passthrough))?;
+    let stream = open_stream(backend, config, Box::new(Passthrough))?;
 
     let lat = stream.latency();
     println!("─ 取樣率　：{} Hz", lat.sample_rate);

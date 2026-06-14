@@ -48,6 +48,30 @@ impl LatencyInfo {
     }
 }
 
+/// 可選的音訊後端種類（給 UI 下拉與 [`crate::open_stream`] 工廠用）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BackendKind {
+    /// WASAPI 共享：通用、相容性最好；但延遲受 Windows 音訊引擎 period 限制
+    /// （多數驅動鎖在 ~10ms），無法做到吉他級低延遲。
+    WasapiShared,
+    /// WASAPI 獨佔：繞過共享引擎、用裝置真實最小 buffer，延遲低（個位數 ms），
+    /// 代價是獨佔該輸入／輸出裝置。
+    WasapiExclusive,
+}
+
+impl BackendKind {
+    /// UI 顯示名稱。
+    pub fn label(self) -> &'static str {
+        match self {
+            BackendKind::WasapiShared => "WASAPI 共享",
+            BackendKind::WasapiExclusive => "WASAPI 獨佔",
+        }
+    }
+
+    /// 所有可選後端（給下拉選單列舉）。
+    pub const ALL: [BackendKind; 2] = [BackendKind::WasapiShared, BackendKind::WasapiExclusive];
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum BackendError {
     #[error("找不到可用的音訊裝置")]

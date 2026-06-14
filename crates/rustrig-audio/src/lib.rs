@@ -15,6 +15,23 @@ pub mod ring;
 pub mod rt;
 pub mod wasapi;
 
-pub use backend::{AudioBackend, BackendError, LatencyInfo, RunningStream, StreamConfig};
+pub use backend::{
+    AudioBackend, BackendError, BackendKind, LatencyInfo, RunningStream, StreamConfig,
+};
 pub use devices::{DeviceInfo, DeviceLists, enumerate};
-pub use wasapi::WasapiShared;
+pub use wasapi::{WasapiExclusive, WasapiShared};
+
+use rustrig_dsp::AudioProcessor;
+
+/// 依 [`BackendKind`] 開啟並啟動串流。GUI / probe 用這個工廠選後端，
+/// 不必各自 match 具體型別。
+pub fn open_stream(
+    kind: BackendKind,
+    config: StreamConfig,
+    processor: Box<dyn AudioProcessor>,
+) -> Result<Box<dyn RunningStream>, BackendError> {
+    match kind {
+        BackendKind::WasapiShared => WasapiShared::open(config)?.run(processor),
+        BackendKind::WasapiExclusive => WasapiExclusive::open(config)?.run(processor),
+    }
+}

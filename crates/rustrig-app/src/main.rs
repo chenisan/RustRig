@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, CornerRadius, FontId, Margin, RichText, Stroke};
 use rustrig_audio::{
-    AudioBackend, DeviceLists, LatencyInfo, RunningStream, StreamConfig, WasapiShared,
+    BackendKind, DeviceLists, LatencyInfo, RunningStream, StreamConfig, open_stream,
 };
 use rustrig_dsp::{CabIr, Chain, Drive, Gain, MeterHandle, PeakMeter, SharedParam};
 use widgets as w;
@@ -72,6 +72,8 @@ struct RigApp {
     /// None = 系統預設
     sel_capture: Option<String>,
     sel_render: Option<String>,
+    /// 音訊後端（共享 / 獨佔）
+    backend: BackendKind,
 
     ghosts: Vec<GhostKnob>,
 }
@@ -119,6 +121,7 @@ impl RigApp {
             devices: rustrig_audio::enumerate().unwrap_or_default(),
             sel_capture: None,
             sel_render: None,
+            backend: BackendKind::WasapiShared,
             ghosts: vec![
                 GhostKnob { label: "GATE", accent: w::PINK, value: 0.3 },
                 GhostKnob { label: "REVERB", accent: w::GREEN, value: 0.25 },
@@ -143,7 +146,7 @@ impl RigApp {
             render_id: self.sel_render.clone(),
             ..Default::default()
         };
-        match WasapiShared::open(config).and_then(|b| b.run(Box::new(chain))) {
+        match open_stream(self.backend, config, Box::new(chain)) {
             Ok(s) => {
                 self.latency = Some(s.latency());
                 self.stream = Some(s);
@@ -204,6 +207,25 @@ impl RigApp {
                     }
                 });
             }
+            // ── 後端引擎（共享 / 獨佔）──
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("引擎").color(w::DIM).size(10.5))
+                    .on_hover_text("獨佔模式延遲低（個位數 ms）但會獨佔裝置；共享模式相容性好但延遲較高");
+                let before = self.backend;
+                egui::ComboBox::from_id_salt("backend")
+                    .width(combo_w)
+                    .selected_text(
+                        RichText::new(self.backend.label()).size(10.5).color(w::TEXT),
+                    )
+                    .show_ui(ui, |ui| {
+                        for k in BackendKind::ALL {
+                            ui.selectable_value(&mut self.backend, k, k.label());
+                        }
+                    });
+                if self.backend != before {
+                    device_changed = true;
+                }
+            });
             ui.horizontal(|ui| {
                 if ui
                     .button(RichText::new("⟳ 重新整理").size(9.5))
@@ -453,7 +475,7 @@ fn status_card(ui: &mut egui::Ui, app: &RigApp) {
             ui.label(RichText::new(dot).color(col).size(12.0));
             ui.label(RichText::new(label).color(w::TEXT).size(12.0));
             ui.add_space(12.0);
-            ui.label(RichText::new("WASAPI-Shared").color(w::DIM).size(11.0).monospace());
+            ui.label(RichText::new(app.backend.label()).color(w::DIM).size(11.0).monospace());
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let stat = |v: String| RichText::new(v).color(w::TEXT).size(11.0).monospace();
