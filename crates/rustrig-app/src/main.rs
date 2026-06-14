@@ -94,9 +94,9 @@ fn device_label(list: &[rustrig_audio::DeviceInfo], sel: &Option<String>) -> Str
     }
 }
 
-/// 0..1 → 800..8000 Hz（一個 decade 的對數刻度）
+/// 0..1 → 500..5000 Hz（一個 decade 的對數刻度，落在 cab 也聽得到的頻段）
 fn tone_norm_to_hz(norm: f32) -> f32 {
-    800.0 * 10f32.powf(norm.clamp(0.0, 1.0))
+    500.0 * 10f32.powf(norm.clamp(0.0, 1.0))
 }
 
 impl RigApp {
@@ -113,9 +113,9 @@ impl RigApp {
             disp_db: -80.0,
             clip_until: None,
             drive_db_v: 18.0,
-            tone_norm: 0.55,
+            tone_norm: 0.65,
             drive_db: SharedParam::new(18.0),
-            tone_hz: SharedParam::new(tone_norm_to_hz(0.55)),
+            tone_hz: SharedParam::new(tone_norm_to_hz(0.65)),
             drive_on_p: SharedParam::new(1.0),
             drive_on: true,
             cab_on_p: SharedParam::new(1.0),
@@ -427,7 +427,7 @@ impl eframe::App for RigApp {
                                 }) {
                                     self.drive_db.set(self.drive_db_v);
                                 }
-                                if w::knob(ui, "TONE", &mut self.tone_norm, 0.0, 1.0, 0.55, w::CYAN, true, &|v| {
+                                if w::knob(ui, "TONE", &mut self.tone_norm, 0.0, 1.0, 0.65, w::CYAN, true, &|v| {
                                     let hz = tone_norm_to_hz(v);
                                     if hz >= 1000.0 { format!("{:.1}k", hz / 1000.0) } else { format!("{hz:.0}Hz") }
                                 }) {

@@ -1,7 +1,7 @@
 //! 破音（dirt / overdrive）。
 //!
 //! 訊號流：pre-HPF（收緊低頻）→ 前級增益（DRIVE）→ **4× oversampling
-//! 非對稱 soft-clip**（防 aliasing）→ TONE 一階低通 → 自動電平補償。
+//! 非對稱 soft-clip**（防 aliasing）→ TONE 二階低通 → 輕量電平補償。
 //!
 //! 非線性一定要在升頻域做：tanh 產生的高次諧波在原生取樣率會摺疊回
 //! 可聽頻段（aliasing，數位破音的「沙沙感」元兇）。4× = 兩級 halfband 2×。
@@ -94,18 +94,18 @@ impl Os2x {
     }
 }
 
-/// 非對稱 soft-clip：正半 tanh、負半較快進入飽和 → 帶偶次諧波，
-/// 比對稱 tanh 更接近真空管的不對稱壓縮感。
+/// 非對稱 soft-clip：正半 tanh、負半更早進入飽和（不對稱量 2.0）→ 更強的偶次
+/// 諧波與顆粒感，高增益時更兇，接近真空管的不對稱壓縮。
 #[inline]
 fn shape(x: f32) -> f32 {
-    if x >= 0.0 { x.tanh() } else { (1.5 * x).tanh() / 1.5 }
+    if x >= 0.0 { x.tanh() } else { (2.0 * x).tanh() / 2.0 }
 }
 
 /// 破音效果。參數全部 lock-free（GUI 寫、音訊執行緒讀）。
 pub struct Drive {
     /// 前級增益 dB（0–40）
     pub drive_db: SharedParam,
-    /// TONE 低通截止 Hz（800–8000）
+    /// TONE 低通截止 Hz（500–5000，二階）
     pub tone_hz: SharedParam,
     /// >0.5 = 開
     pub enabled: SharedParam,
@@ -113,11 +113,13 @@ pub struct Drive {
     os1: Os2x,
     os2: Os2x,
     sr: f32,
-    // 一階濾波器狀態
+    // 一階 HPF 狀態
     hpf_y: f32,
     hpf_x: f32,
     hpf_a: f32,
+    // TONE 二階 LPF：兩級串接一階（各 6dB/oct → 共 12dB/oct）
     lpf_y: f32,
+    lpf_y2: f32,
 }
 
 impl Drive {
@@ -133,6 +135,7 @@ impl Drive {
             hpf_x: 0.0,
             hpf_a: 0.0,
             lpf_y: 0.0,
+            lpf_y2: 0.0,
         }
     }
 
@@ -155,9 +158,10 @@ impl AudioProcessor for Drive {
             return;
         }
         let pre = 10f32.powf(self.drive_db.get() / 20.0);
-        // 自動補償：drive 越大輸出修剪越多（取一半斜率，保留一點「推起來變大聲」的手感）
-        let makeup = 10f32.powf(-self.drive_db.get() / 40.0);
-        let lpf_a = Self::one_pole_coeff(self.sr, self.tone_hz.get().clamp(800.0, 8000.0));
+        // 輕量電平補償（只補約 1/4 斜率）：讓催 drive 真的越來越兇、越來越大聲，
+        // 而不是被補償壓平成「只是更糊、音量不變」。仍夠擋住輸出爆掉。
+        let makeup = 10f32.powf(-self.drive_db.get() / 80.0);
+        let lpf_a = Self::one_pole_coeff(self.sr, self.tone_hz.get().clamp(500.0, 5000.0));
 
         for s in buf {
             // 一階 HPF（y = a*(y_prev + x - x_prev)）
@@ -175,10 +179,11 @@ impl AudioProcessor for Drive {
             let db = self.os2.downsample(shape(b1), shape(b2));
             let clipped = self.os1.downsample(da, db);
 
-            // TONE 一階 LPF
+            // TONE 二階 LPF（兩級一階串接，12dB/oct，斜率更陡更有感）
             self.lpf_y = lpf_a * self.lpf_y + (1.0 - lpf_a) * clipped;
+            self.lpf_y2 = lpf_a * self.lpf_y2 + (1.0 - lpf_a) * self.lpf_y;
 
-            *s = self.lpf_y * makeup;
+            *s = self.lpf_y2 * makeup;
         }
     }
 
@@ -188,6 +193,7 @@ impl AudioProcessor for Drive {
         self.hpf_y = 0.0;
         self.hpf_x = 0.0;
         self.lpf_y = 0.0;
+        self.lpf_y2 = 0.0;
     }
 }
 
