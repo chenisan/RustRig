@@ -9,9 +9,13 @@
 
 pub mod cab;
 pub mod drive;
+pub mod gate;
+pub mod reverb;
 
 pub use cab::CabIr;
 pub use drive::Drive;
+pub use gate::Gate;
+pub use reverb::Reverb;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};

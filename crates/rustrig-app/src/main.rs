@@ -10,11 +10,11 @@ mod widgets;
 
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Color32, CornerRadius, FontId, Margin, RichText, Stroke};
+use eframe::egui::{self, CornerRadius, FontId, Margin, RichText, Stroke};
 use rustrig_audio::{
     BackendKind, DeviceLists, LatencyInfo, RunningStream, StreamConfig, open_stream,
 };
-use rustrig_dsp::{CabIr, Chain, Drive, Gain, MeterHandle, PeakMeter, SharedParam};
+use rustrig_dsp::{CabIr, Chain, Drive, Gain, Gate, MeterHandle, PeakMeter, Reverb, SharedParam};
 use widgets as w;
 
 fn main() -> eframe::Result {
@@ -31,13 +31,6 @@ fn main() -> eframe::Result {
     )
 }
 
-/// 佔位旋鈕（之後 P1/P3 點亮成真效果）。
-struct GhostKnob {
-    label: &'static str,
-    accent: Color32,
-    value: f32,
-}
-
 struct RigApp {
     stream: Option<Box<dyn RunningStream>>,
     latency: Option<LatencyInfo>,
@@ -52,9 +45,15 @@ struct RigApp {
     disp_db: f32,
     clip_until: Option<Instant>,
 
+    // ── 雜訊閘（破音前）──
+    gate_v: f32, // 0..1 強度
+    gate_amt: SharedParam,
+    gate_on_p: SharedParam,
+    gate_on: bool,
+
     // ── 破音 ──
     drive_db_v: f32,
-    tone_norm: f32, // 0..1 → 800..8000 Hz（對數）
+    tone_norm: f32, // 0..1 → 500..5000 Hz（對數）
     drive_db: SharedParam,
     tone_hz: SharedParam,
     drive_on_p: SharedParam,
@@ -79,7 +78,11 @@ struct RigApp {
     /// 選定的 ASIO 驅動（None = 第一個可用）
     sel_asio_driver: Option<String>,
 
-    ghosts: Vec<GhostKnob>,
+    // ── 殘響（cab 後）──
+    reverb_v: f32, // 0..1 濕量
+    reverb_mix: SharedParam,
+    reverb_on_p: SharedParam,
+    reverb_on: bool,
 }
 
 /// ComboBox 顯示用：依選擇的 ID 找名稱。
@@ -112,6 +115,10 @@ impl RigApp {
             meter: MeterHandle::new(),
             disp_db: -80.0,
             clip_until: None,
+            gate_v: 0.0,
+            gate_amt: SharedParam::new(0.0),
+            gate_on_p: SharedParam::new(0.0),
+            gate_on: false,
             drive_db_v: 18.0,
             tone_norm: 0.65,
             drive_db: SharedParam::new(18.0),
@@ -128,15 +135,20 @@ impl RigApp {
             backend: BackendKind::WasapiShared,
             asio_drivers: rustrig_audio::asio_driver_names(),
             sel_asio_driver: None,
-            ghosts: vec![
-                GhostKnob { label: "GATE", accent: w::PINK, value: 0.3 },
-                GhostKnob { label: "REVERB", accent: w::GREEN, value: 0.25 },
-            ],
+            reverb_v: 0.3,
+            reverb_mix: SharedParam::new(0.3),
+            reverb_on_p: SharedParam::new(0.0),
+            reverb_on: false,
         }
     }
 
     fn start(&mut self) {
         let mut chain = Chain::new();
+        // 訊號鏈：閘（破音前）→ 破音 → cab → 殘響 → 音量 → 峰值表
+        chain.push(Box::new(Gate::new(
+            self.gate_amt.clone(),
+            self.gate_on_p.clone(),
+        )));
         chain.push(Box::new(Drive::new(
             self.drive_db.clone(),
             self.tone_hz.clone(),
@@ -145,6 +157,10 @@ impl RigApp {
         if let Some((raw, sr)) = &self.ir {
             chain.push(Box::new(CabIr::new(raw.clone(), *sr, self.cab_on_p.clone())));
         }
+        chain.push(Box::new(Reverb::new(
+            self.reverb_mix.clone(),
+            self.reverb_on_p.clone(),
+        )));
         chain.push(Box::new(Gain::new(self.volume.clone())));
         chain.push(Box::new(PeakMeter::new(self.meter.clone())));
         let config = StreamConfig {
@@ -434,18 +450,28 @@ impl eframe::App for RigApp {
                                     self.tone_hz.set(tone_norm_to_hz(self.tone_norm));
                                 }
                             });
-                            // ── 第二排：佔位（GATE / REVERB）──
+                            // ── 第二排：閘 / 殘響（live）──
                             ui.horizontal(|ui| {
-                                for g in &mut self.ghosts {
-                                    w::knob(ui, g.label, &mut g.value, 0.0, 1.0, 0.5, g.accent, false, &|v| {
-                                        format!("{:.0}%", v * 100.0)
-                                    });
+                                if w::knob(ui, "GATE", &mut self.gate_v, 0.0, 1.0, 0.0, w::PINK, true, &|v| {
+                                    format!("{:.0}%", v * 100.0)
+                                }) {
+                                    self.gate_amt.set(self.gate_v);
+                                }
+                                if w::knob(ui, "REVERB", &mut self.reverb_v, 0.0, 1.0, 0.3, w::GREEN, true, &|v| {
+                                    format!("{:.0}%", v * 100.0)
+                                }) {
+                                    self.reverb_mix.set(self.reverb_v);
                                 }
                             });
                             ui.add_space(6.0);
-                            // ── 開關列 ──
-                            ui.horizontal(|ui| {
+                            // ── 開關列（訊號順序：閘 → 破音 → cab → 殘響）──
+                            ui.horizontal_wrapped(|ui| {
                                 ui.add_space(2.0);
+                                if w::led_toggle(ui, "GATE", self.gate_on, w::PINK).clicked() {
+                                    self.gate_on = !self.gate_on;
+                                    self.gate_on_p.set(if self.gate_on { 1.0 } else { 0.0 });
+                                }
+                                ui.add_space(4.0);
                                 if w::led_toggle(ui, "DRIVE", self.drive_on, w::AMBER).clicked() {
                                     self.drive_on = !self.drive_on;
                                     self.drive_on_p.set(if self.drive_on { 1.0 } else { 0.0 });
@@ -454,6 +480,11 @@ impl eframe::App for RigApp {
                                 if w::led_toggle(ui, "CAB", self.cab_on, w::MAGENTA).clicked() {
                                     self.cab_on = !self.cab_on;
                                     self.cab_on_p.set(if self.cab_on { 1.0 } else { 0.0 });
+                                }
+                                ui.add_space(4.0);
+                                if w::led_toggle(ui, "REVERB", self.reverb_on, w::GREEN).clicked() {
+                                    self.reverb_on = !self.reverb_on;
+                                    self.reverb_on_p.set(if self.reverb_on { 1.0 } else { 0.0 });
                                 }
                             });
                             ui.add_space(8.0);
