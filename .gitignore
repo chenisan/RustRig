@@ -1,1 +1,4 @@
 /target
+
+# ASIO SDK（Steinberg 專有授權，不可進 repo；本機自用，CPAL_ASIO_DIR 指向它）
+/third_party/
