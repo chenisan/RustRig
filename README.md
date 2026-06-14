@@ -1,6 +1,10 @@
-# RustRig
+<p align="center">
+  <img src="docs/banner.png" alt="RustRig" width="760">
+</p>
 
-用 Rust 寫的 Windows **獨立電吉他即時效果處理器**——低延遲音訊引擎 + 破音 / 箱體 IR / 雜訊閘 / 殘響，對標 Neural DSP 的 standalone 模式。
+<p align="center">
+  用 Rust 寫的 Windows <b>獨立電吉他即時效果處理器</b>——低延遲音訊引擎 + 破音 / 箱體 IR / 雜訊閘 / 殘響，對標 Neural DSP 的 standalone 模式。
+</p>
 
 > ⚠️ **早期版（alpha）**：目前是「直通 + 破音 + cab IR + gate + reverb」的低延遲框架。**真正的擴大機模型（NAM / amp sim）還沒做**——破音目前是 amp 前的 boost，不是完整音箱。拿來試延遲、試 cab IR、試效果鏈沒問題，但別期待完整 amp 音色。歡迎回饋。
 
