@@ -20,9 +20,10 @@ windows = { version = "0.62.2", features = [
     "Win32_Devices_FunctionDiscovery",    # PKEY_Device_FriendlyName
     "Win32_UI_Shell_PropertiesSystem",    # IPropertyStore / PROPERTYKEY
 ] }
+asio-sys = { version = "0.3.0", optional = true }
 
 # WASAPI / MMCSS 後端：windows crate 在寫實作那步 cargo add（含 audio features）
 # ASIO 後端 feature-gated，需 ASIO SDK + libclang，預設不編
 [features]
 default = []
-asio = []
+asio = ["dep:asio-sys"]

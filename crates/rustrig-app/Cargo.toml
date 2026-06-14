@@ -19,3 +19,7 @@ anyhow = "1"
 eframe = "0.34.3"
 hound = "3.5.1"
 rfd = "0.17.2"
+
+[features]
+# 啟用 ASIO 後端（需 ASIO SDK + libclang，見 .cargo/config.toml）。
+asio = ["rustrig-audio/asio"]

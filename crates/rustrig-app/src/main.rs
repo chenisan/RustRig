@@ -72,8 +72,12 @@ struct RigApp {
     /// None = 系統預設
     sel_capture: Option<String>,
     sel_render: Option<String>,
-    /// 音訊後端（共享 / 獨佔）
+    /// 音訊後端（共享 / 獨佔 / ASIO）
     backend: BackendKind,
+    /// 可用的 ASIO 驅動清單（未以 --features asio 編譯時為空）
+    asio_drivers: Vec<String>,
+    /// 選定的 ASIO 驅動（None = 第一個可用）
+    sel_asio_driver: Option<String>,
 
     ghosts: Vec<GhostKnob>,
 }
@@ -122,6 +126,8 @@ impl RigApp {
             sel_capture: None,
             sel_render: None,
             backend: BackendKind::WasapiShared,
+            asio_drivers: rustrig_audio::asio_driver_names(),
+            sel_asio_driver: None,
             ghosts: vec![
                 GhostKnob { label: "GATE", accent: w::PINK, value: 0.3 },
                 GhostKnob { label: "REVERB", accent: w::GREEN, value: 0.25 },
@@ -144,6 +150,7 @@ impl RigApp {
         let config = StreamConfig {
             capture_id: self.sel_capture.clone(),
             render_id: self.sel_render.clone(),
+            asio_driver: self.sel_asio_driver.clone(),
             ..Default::default()
         };
         match open_stream(self.backend, config, Box::new(chain)) {
@@ -179,38 +186,11 @@ impl RigApp {
         let mut device_changed = false;
         panel_frame().show(ui, |ui| {
             let combo_w = ui.available_width() - 86.0;
-            for (label, sel, list) in [
-                ("輸入", &mut self.sel_capture, &self.devices.capture),
-                ("輸出", &mut self.sel_render, &self.devices.render),
-            ] {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(label).color(w::DIM).size(10.5));
-                    let before = sel.clone();
-                    egui::ComboBox::from_id_salt(label)
-                        .width(combo_w)
-                        .selected_text(
-                            RichText::new(device_label(list, sel)).size(10.5).color(w::TEXT),
-                        )
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(sel, None, "系統預設");
-                            for d in list {
-                                let name = if d.is_default {
-                                    format!("{}（預設）", d.name)
-                                } else {
-                                    d.name.clone()
-                                };
-                                ui.selectable_value(sel, Some(d.id.clone()), name);
-                            }
-                        });
-                    if *sel != before {
-                        device_changed = true;
-                    }
-                });
-            }
-            // ── 後端引擎（共享 / 獨佔）──
+
+            // ── 後端引擎（共享 / 獨佔 / ASIO）──
             ui.horizontal(|ui| {
                 ui.label(RichText::new("引擎").color(w::DIM).size(10.5))
-                    .on_hover_text("獨佔模式延遲低（個位數 ms）但會獨佔裝置；共享模式相容性好但延遲較高");
+                    .on_hover_text("ASIO 最低延遲（需 ASIO 驅動）；獨佔次低但獨佔裝置；共享相容性最好但延遲高");
                 let before = self.backend;
                 egui::ComboBox::from_id_salt("backend")
                     .width(combo_w)
@@ -226,22 +206,90 @@ impl RigApp {
                     device_changed = true;
                 }
             });
+
+            if self.backend == BackendKind::Asio {
+                // ── ASIO 驅動選擇（ASIO 自有清單，非 MMDevice）──
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("驅動").color(w::DIM).size(10.5));
+                    let before = self.sel_asio_driver.clone();
+                    let sel_text = self
+                        .sel_asio_driver
+                        .clone()
+                        .unwrap_or_else(|| "第一個可用".into());
+                    egui::ComboBox::from_id_salt("asio_driver")
+                        .width(combo_w)
+                        .selected_text(RichText::new(sel_text).size(10.5).color(w::TEXT))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.sel_asio_driver, None, "第一個可用");
+                            for name in &self.asio_drivers {
+                                ui.selectable_value(
+                                    &mut self.sel_asio_driver,
+                                    Some(name.clone()),
+                                    name,
+                                );
+                            }
+                        });
+                    if self.sel_asio_driver != before {
+                        device_changed = true;
+                    }
+                });
+                if self.asio_drivers.is_empty() {
+                    ui.label(
+                        RichText::new("找不到 ASIO 驅動（需以 --features asio 編譯並安裝驅動）")
+                            .color(w::FAINT)
+                            .size(9.0),
+                    );
+                }
+            } else {
+                // ── WASAPI 輸入／輸出裝置 ──
+                for (label, sel, list) in [
+                    ("輸入", &mut self.sel_capture, &self.devices.capture),
+                    ("輸出", &mut self.sel_render, &self.devices.render),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(label).color(w::DIM).size(10.5));
+                        let before = sel.clone();
+                        egui::ComboBox::from_id_salt(label)
+                            .width(combo_w)
+                            .selected_text(
+                                RichText::new(device_label(list, sel)).size(10.5).color(w::TEXT),
+                            )
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(sel, None, "系統預設");
+                                for d in list {
+                                    let name = if d.is_default {
+                                        format!("{}（預設）", d.name)
+                                    } else {
+                                        d.name.clone()
+                                    };
+                                    ui.selectable_value(sel, Some(d.id.clone()), name);
+                                }
+                            });
+                        if *sel != before {
+                            device_changed = true;
+                        }
+                    });
+                }
+            }
+
             ui.horizontal(|ui| {
                 if ui
                     .button(RichText::new("⟳ 重新整理").size(9.5))
-                    .on_hover_text("重新掃描音訊裝置")
+                    .on_hover_text("重新掃描音訊裝置 / ASIO 驅動")
                     .clicked()
                 {
                     match rustrig_audio::enumerate() {
                         Ok(d) => self.devices = d,
                         Err(e) => self.error = Some(format!("裝置列舉失敗：{e}")),
                     }
+                    self.asio_drivers = rustrig_audio::asio_driver_names();
                 }
-                ui.label(
-                    RichText::new("輸入輸出建議用同一台介面（共用時鐘）")
-                        .color(w::FAINT)
-                        .size(9.0),
-                );
+                let hint = if self.backend == BackendKind::Asio {
+                    "ASIO buffer 大小在驅動控制台設定"
+                } else {
+                    "輸入輸出建議用同一台介面（共用時鐘）"
+                };
+                ui.label(RichText::new(hint).color(w::FAINT).size(9.0));
             });
         });
         if device_changed {

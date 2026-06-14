@@ -2,3 +2,6 @@
 
 # ASIO SDK（Steinberg 專有授權，不可進 repo；本機自用，CPAL_ASIO_DIR 指向它）
 /third_party/
+
+# 本機專屬建置設定（含 machine-specific 路徑：CPAL_ASIO_DIR / LIBCLANG_PATH）
+/.cargo/config.toml

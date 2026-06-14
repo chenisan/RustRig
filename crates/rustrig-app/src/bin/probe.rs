@@ -51,6 +51,8 @@ fn main() -> anyhow::Result<()> {
             backend = BackendKind::WasapiExclusive;
         } else if matches!(low.as_str(), "shared" | "share" | "共享") {
             backend = BackendKind::WasapiShared;
+        } else if matches!(low.as_str(), "asio") {
+            backend = BackendKind::Asio;
         } else {
             filter = Some(arg);
         }

@@ -9,6 +9,8 @@
 //! `capture thread → SPSC ring → render thread(DSP 在此)`，ring 的水位
 //! 就是 drift / jitter 緩衝。
 
+#[cfg(feature = "asio")]
+pub mod asio;
 pub mod backend;
 pub mod devices;
 pub mod ring;
@@ -33,5 +35,23 @@ pub fn open_stream(
     match kind {
         BackendKind::WasapiShared => WasapiShared::open(config)?.run(processor),
         BackendKind::WasapiExclusive => WasapiExclusive::open(config)?.run(processor),
+        #[cfg(feature = "asio")]
+        BackendKind::Asio => asio::AsioBackend::open(config)?.run(processor),
+        #[cfg(not(feature = "asio"))]
+        BackendKind::Asio => Err(BackendError::Os(
+            "ASIO 後端未編譯（請以 --features asio 重新編譯）".into(),
+        )),
+    }
+}
+
+/// 列出可用的 ASIO 驅動名稱。未以 `--features asio` 編譯時回空清單。
+pub fn asio_driver_names() -> Vec<String> {
+    #[cfg(feature = "asio")]
+    {
+        asio::driver_names()
+    }
+    #[cfg(not(feature = "asio"))]
+    {
+        Vec::new()
     }
 }

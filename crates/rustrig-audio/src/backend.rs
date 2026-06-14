@@ -10,9 +10,13 @@ pub struct StreamConfig {
     pub block_size: usize,
     pub channels: u16,
     /// 擷取裝置 ID（見 [`crate::devices::enumerate`]）。`None` = 系統預設。
+    /// 僅 WASAPI 後端使用。
     pub capture_id: Option<String>,
-    /// 輸出裝置 ID。`None` = 系統預設。
+    /// 輸出裝置 ID。`None` = 系統預設。僅 WASAPI 後端使用。
     pub render_id: Option<String>,
+    /// ASIO 驅動名稱（見 [`BackendKind::WasapiExclusive`] 之外的 ASIO 後端）。
+    /// `None` = 第一個可用驅動。僅 ASIO 後端使用。
+    pub asio_driver: Option<String>,
 }
 
 impl Default for StreamConfig {
@@ -23,6 +27,7 @@ impl Default for StreamConfig {
             channels: 1,
             capture_id: None,
             render_id: None,
+            asio_driver: None,
         }
     }
 }
@@ -57,6 +62,9 @@ pub enum BackendKind {
     /// WASAPI 獨佔：繞過共享引擎、用裝置真實最小 buffer，延遲低（個位數 ms），
     /// 代價是獨佔該輸入／輸出裝置。
     WasapiExclusive,
+    /// ASIO：專業驅動直連，最低延遲（RME 可達 3-5ms）。單一雙工 callback。
+    /// 需以 `--features asio` 編譯且機器裝有 ASIO 驅動。
+    Asio,
 }
 
 impl BackendKind {
@@ -65,11 +73,16 @@ impl BackendKind {
         match self {
             BackendKind::WasapiShared => "WASAPI 共享",
             BackendKind::WasapiExclusive => "WASAPI 獨佔",
+            BackendKind::Asio => "ASIO",
         }
     }
 
     /// 所有可選後端（給下拉選單列舉）。
-    pub const ALL: [BackendKind; 2] = [BackendKind::WasapiShared, BackendKind::WasapiExclusive];
+    pub const ALL: [BackendKind; 3] = [
+        BackendKind::WasapiShared,
+        BackendKind::WasapiExclusive,
+        BackendKind::Asio,
+    ];
 }
 
 #[derive(thiserror::Error, Debug)]
