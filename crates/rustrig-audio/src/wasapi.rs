@@ -5,7 +5,9 @@
 //! 避開雙執行緒時鐘同步的複雜度。UCX II 的 in/out 同一實體晶振，drift 極小；
 //! 不同裝置的 drift 由 ring 水位吸收並計入 xrun。
 //!
-//! 後續升級點（已標 TODO）：IAudioClient3 低延遲共享、Exclusive 模式、ASIO。
+//! 低延遲：用 IAudioClient3 `InitializeSharedAudioStream` 取 engine 最小 period
+//! 把共享模式延遲壓到驅動下限（驅動不支援時自動退回 v1 預設 period）。
+//! 後續升級點：Exclusive 模式、ASIO（UCX II 走 ASIO 可再下探到 3–5ms）。
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -16,16 +18,16 @@ use rustrig_dsp::AudioProcessor;
 use windows::Win32::Foundation::{CloseHandle, WAIT_FAILED, WAIT_OBJECT_0};
 use windows::Win32::Media::Audio::{
     AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT,
-    AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, IAudioCaptureClient, IAudioClient,
-    IAudioRenderClient, IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
-    eCapture, eConsole, eRender,
+    AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, EDataFlow, IAudioCaptureClient,
+    IAudioClient, IAudioClient3, IAudioRenderClient, IMMDevice, IMMDeviceEnumerator,
+    MMDeviceEnumerator, WAVEFORMATEX, WAVEFORMATEXTENSIBLE, eCapture, eConsole, eRender,
 };
 use windows::Win32::System::Com::{
     CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
     CoUninitialize,
 };
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
-use windows::core::{Error as WinError, PCWSTR, Result as WinResult};
+use windows::core::{Error as WinError, Interface, PCWSTR, Result as WinResult};
 
 use crate::backend::{AudioBackend, BackendError, LatencyInfo, RunningStream, StreamConfig};
 use crate::ring;
@@ -185,8 +187,8 @@ fn audio_thread(
 unsafe fn get_device(
     enumerator: &IMMDeviceEnumerator,
     id: Option<&str>,
-    flow: windows::Win32::Media::Audio::EDataFlow,
-) -> WinResult<windows::Win32::Media::Audio::IMMDevice> {
+    flow: EDataFlow,
+) -> WinResult<IMMDevice> {
     match id {
         Some(id) => {
             let wide: Vec<u16> = id.encode_utf16().chain(std::iter::once(0)).collect();
@@ -196,8 +198,83 @@ unsafe fn get_device(
     }
 }
 
+/// 一個初始化好的 client：base `IAudioClient`（IAudioClient3 經 cast 取得，
+/// base 方法經繼承照用）、mix format、buffer 大小（frames）。實際採用的 engine
+/// period 在 [`init_low_latency`] 內以 eprintln 回報。
+struct InitedClient {
+    client: IAudioClient,
+    fmt: Fmt,
+    buffer_frames: u32,
+}
+
+/// v1 預設 period 初始化（fallback 路徑）：重新 Activate 一顆乾淨 client，
+/// 用 `Initialize` 走引擎預設 period。`pwfx` 由呼叫端負責釋放。
+unsafe fn init_v1(
+    dev: &IMMDevice,
+    pwfx: *const WAVEFORMATEX,
+    stream_flags: u32,
+) -> WinResult<IAudioClient> {
+    let client: IAudioClient = unsafe { dev.Activate(CLSCTX_ALL, None)? };
+    unsafe { client.Initialize(AUDCLNT_SHAREMODE_SHARED, stream_flags, 0, 0, pwfx, None)? };
+    Ok(client)
+}
+
+/// 低延遲初始化：優先 `IAudioClient3` + `InitializeSharedAudioStream`（engine 最小
+/// period，把共享模式延遲壓到驅動允許的下限）；任一步失敗就退回 v1 預設 period。
+/// `stream_flags`：capture 傳 0（輪詢），render 傳 EVENTCALLBACK。
+unsafe fn init_low_latency(dev: &IMMDevice, stream_flags: u32) -> WinResult<InitedClient> {
+    let client3: IAudioClient3 = unsafe { dev.Activate(CLSCTX_ALL, None)? };
+    let pwfx = unsafe { client3.GetMixFormat()? };
+    if !unsafe { is_float32(pwfx) } {
+        unsafe { CoTaskMemFree(Some(pwfx as *const _)) };
+        return Err(WinError::new(
+            windows::core::HRESULT(-1),
+            "裝置非 float32 mix format",
+        ));
+    }
+    let fmt = unsafe { read_fmt(pwfx) };
+
+    // 查驅動允許的 engine period 範圍（frames）。
+    let mut def = 0u32;
+    let mut fund = 0u32;
+    let mut min = 0u32;
+    let mut max = 0u32;
+    let period_query =
+        unsafe { client3.GetSharedModeEnginePeriod(pwfx, &mut def, &mut fund, &mut min, &mut max) };
+
+    let (client, period_frames) = match period_query {
+        // 用最小 period 起最低延遲；若驅動拒絕就退回 v1 預設。
+        Ok(()) => match unsafe { client3.InitializeSharedAudioStream(stream_flags, min, pwfx, None) }
+        {
+            Ok(()) => {
+                eprintln!(
+                    "[wasapi] IAudioClient3 低延遲：period={min} frames (def={def} min={min} max={max} fund={fund})"
+                );
+                (client3.cast::<IAudioClient>()?, min)
+            }
+            Err(e) => {
+                eprintln!("[wasapi] InitializeSharedAudioStream 失敗（{e}）→ 退回 v1 預設 period");
+                (unsafe { init_v1(dev, pwfx, stream_flags)? }, def)
+            }
+        },
+        Err(e) => {
+            eprintln!("[wasapi] GetSharedModeEnginePeriod 失敗（{e}）→ 退回 v1 預設 period");
+            (unsafe { init_v1(dev, pwfx, stream_flags)? }, def)
+        }
+    };
+
+    let _ = period_frames; // 已於上方 eprintln 回報，這裡不再用
+    unsafe { CoTaskMemFree(Some(pwfx as *const _)) };
+    let buffer_frames = unsafe { client.GetBufferSize()? };
+    Ok(InitedClient {
+        client,
+        fmt,
+        buffer_frames,
+    })
+}
+
 unsafe fn run_inner(
-    config: StreamConfig, // 取樣率/block 由 mix format 決定（升 IAudioClient3 後會用到）；裝置 ID 在此生效
+    config: StreamConfig, // 取樣率/block 由 mix format 決定；裝置 ID 與低延遲 period 在此生效
     processor: &mut dyn AudioProcessor,
     stop: &AtomicBool,
     xruns: &AtomicU64,
@@ -208,40 +285,20 @@ unsafe fn run_inner(
 
     // ── capture（吉他輸入）：poll 模式，不掛 event ──
     let cap_dev = unsafe { get_device(&enumerator, config.capture_id.as_deref(), eCapture)? };
-    let cap_client: IAudioClient = unsafe { cap_dev.Activate(CLSCTX_ALL, None)? };
-    let cap_pwfx = unsafe { cap_client.GetMixFormat()? };
-    if !unsafe { is_float32(cap_pwfx) } {
-        unsafe { CoTaskMemFree(Some(cap_pwfx as *const _)) };
-        return Err(WinError::new(windows::core::HRESULT(-1), "擷取裝置非 float32 mix format"));
-    }
-    let cap_fmt = unsafe { read_fmt(cap_pwfx) };
-    unsafe {
-        cap_client.Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 0, 0, cap_pwfx, None)?;
-        CoTaskMemFree(Some(cap_pwfx as *const _));
-    }
-    let cap_frames = unsafe { cap_client.GetBufferSize()? };
+    let InitedClient {
+        client: cap_client,
+        fmt: cap_fmt,
+        buffer_frames: cap_frames,
+    } = unsafe { init_low_latency(&cap_dev, 0)? };
     let cap_service: IAudioCaptureClient = unsafe { cap_client.GetService()? };
 
     // ── render（喇叭輸出）：event 驅動 ──
     let rnd_dev = unsafe { get_device(&enumerator, config.render_id.as_deref(), eRender)? };
-    let rnd_client: IAudioClient = unsafe { rnd_dev.Activate(CLSCTX_ALL, None)? };
-    let rnd_pwfx = unsafe { rnd_client.GetMixFormat()? };
-    if !unsafe { is_float32(rnd_pwfx) } {
-        unsafe { CoTaskMemFree(Some(rnd_pwfx as *const _)) };
-        return Err(WinError::new(windows::core::HRESULT(-1), "輸出裝置非 float32 mix format"));
-    }
-    let rnd_fmt = unsafe { read_fmt(rnd_pwfx) };
-    unsafe {
-        rnd_client.Initialize(
-            AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-            0,
-            0,
-            rnd_pwfx,
-            None,
-        )?;
-        CoTaskMemFree(Some(rnd_pwfx as *const _));
-    }
+    let InitedClient {
+        client: rnd_client,
+        fmt: rnd_fmt,
+        buffer_frames: rnd_frames,
+    } = unsafe { init_low_latency(&rnd_dev, AUDCLNT_STREAMFLAGS_EVENTCALLBACK)? };
 
     // P0 限制：兩端取樣率不同需要 ASRC，暫不支援（強制同一介面即可避免）
     if cap_fmt.sample_rate != rnd_fmt.sample_rate {
@@ -251,7 +308,6 @@ unsafe fn run_inner(
         ));
     }
 
-    let rnd_frames = unsafe { rnd_client.GetBufferSize()? };
     let rnd_service: IAudioRenderClient = unsafe { rnd_client.GetService()? };
 
     // render event handle（auto-reset、初始 unsignaled）

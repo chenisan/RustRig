@@ -1,28 +1,84 @@
-//! RustRig — 獨立電吉他即時效果處理 app（P0 骨架）。
+//! RustRig — 獨立電吉他即時效果處理 app（延遲探針 CLI）。
 //!
-//! P0 目標：插上吉他 → 直通 → 喇叭，印出實測延遲與 xrun 計數，跑數分鐘零爆音。
+//! 目標：插上吉他 → 直通 → 喇叭，印出實測延遲與 xrun 計數，跑數分鐘零爆音。
 //!
-//! 用法：`rustrig [秒數]`（預設 10 秒後乾淨關閉）。
+//! 用法：`rustrig-probe [秒數] [裝置名稱關鍵字]`
+//!   - 秒數：純數字參數，預設 10；給 0 = 跑到 Ctrl+C。
+//!   - 裝置名稱關鍵字：非數字參數，會在 in/out 兩端各挑第一個名稱含此字的裝置
+//!     （不分大小寫）。例如 `rustrig-probe 8 fireface` 量 RME UCX II。
+//!     省略時 in/out 都用系統預設裝置。
+//!
+//! IAudioClient3 低延遲只在驅動開放小 engine period 時才有效——主機板內建音效
+//! 通常鎖在 10ms，專業介面（UCX II 等）才壓得下去，所以要用關鍵字指定。
 
 use std::time::Duration;
 
-use rustrig_audio::{AudioBackend, StreamConfig, WasapiShared};
+use rustrig_audio::{AudioBackend, DeviceInfo, StreamConfig, WasapiShared, enumerate};
 use rustrig_dsp::Passthrough;
+
+/// 在清單裡找第一個名稱含 `needle`（不分大小寫）的裝置。
+fn find_device<'a>(list: &'a [DeviceInfo], needle: &str) -> Option<&'a DeviceInfo> {
+    let lower = needle.to_lowercase();
+    list.iter().find(|d| d.name.to_lowercase().contains(&lower))
+}
+
+fn print_list(label: &str, list: &[DeviceInfo]) {
+    println!("  {label}：");
+    if list.is_empty() {
+        println!("    （無）");
+    }
+    for d in list {
+        let mark = if d.is_default { " ★預設" } else { "" };
+        println!("    • {}{}", d.name, mark);
+    }
+}
 
 fn main() -> anyhow::Result<()> {
     println!("════════════════════════════════════════");
-    println!(" RustRig P0 — WASAPI 直通延遲測試");
+    println!(" RustRig — WASAPI 直通延遲測試");
     println!("════════════════════════════════════════");
 
-    // 跑多久（秒）。給 0 = 一直跑到 Ctrl+C。
-    let secs: u64 = std::env::args()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10);
+    // 參數：數字 = 秒數，非數字 = 裝置名稱關鍵字。
+    let mut secs: u64 = 10;
+    let mut filter: Option<String> = None;
+    for arg in std::env::args().skip(1) {
+        match arg.parse::<u64>() {
+            Ok(n) => secs = n,
+            Err(_) => filter = Some(arg),
+        }
+    }
 
-    let backend = WasapiShared::open(StreamConfig::default())?;
+    // 列出所有裝置，方便對照關鍵字。
+    let devices = enumerate()?;
+    println!("可用裝置：");
+    print_list("輸入(capture)", &devices.capture);
+    print_list("輸出(render)", &devices.render);
+    println!("────────────────────────────────────────");
+
+    // 依關鍵字挑 in/out 裝置；挑不到就退回系統預設。
+    let mut config = StreamConfig::default();
+    if let Some(f) = &filter {
+        match find_device(&devices.capture, f) {
+            Some(d) => {
+                println!("輸入 → {}", d.name);
+                config.capture_id = Some(d.id.clone());
+            }
+            None => println!("⚠ 找不到名稱含「{f}」的輸入裝置，改用系統預設。"),
+        }
+        match find_device(&devices.render, f) {
+            Some(d) => {
+                println!("輸出 → {}", d.name);
+                config.render_id = Some(d.id.clone());
+            }
+            None => println!("⚠ 找不到名稱含「{f}」的輸出裝置，改用系統預設。"),
+        }
+    } else {
+        println!("（未指定關鍵字，in/out 用系統預設裝置）");
+    }
+
+    let backend = WasapiShared::open(config)?;
     println!("後端：{}", WasapiShared::name());
-    println!("啟動音訊引擎中…（吉他輸入用系統預設擷取裝置）");
+    println!("啟動音訊引擎中…");
 
     let stream = backend.run(Box::new(Passthrough))?;
 
