@@ -97,10 +97,10 @@ const FIXED_GAIN: f32 = 0.015;
 impl AudioProcessor for Reverb {
     fn prepare(&mut self, sample_rate: f32, _max_block: usize) {
         let scale = sample_rate / 44_100.0;
-        // 中大房間：roomsize 0.7 → feedback；damp 0.5。
-        let roomsize = 0.7f32;
-        let feedback = roomsize * 0.28 + 0.7; // ≈0.896
-        let damp = 0.5f32 * 0.4; // Freeverb scaledamp
+        // 大房間 + 低阻尼 → 尾巴長、亮、明顯。roomsize 0.85、damp 較低。
+        let roomsize = 0.85f32;
+        let feedback = roomsize * 0.28 + 0.7; // ≈0.938
+        let damp = 0.3f32 * 0.4; // 較低阻尼 = 高頻保留更多、尾巴更亮
 
         self.combs = COMB_TUNING
             .iter()
@@ -120,8 +120,9 @@ impl AudioProcessor for Reverb {
         if mix < 0.005 {
             return; // 全乾：直接 pass，省去殘響運算
         }
-        // 乾訊號保持滿，濕訊號疊加（最高 100% 也只到 0.6 倍，避免糊掉主音色）
-        let wet = mix * 0.6;
+        // 乾訊號保持滿，濕訊號疊加。wet 量放大到接近標準 Freeverb，明顯可聞；
+        // 旋鈕別開到滿（會蓋過乾訊號），中段就很夠。
+        let wet = mix * 2.2;
 
         for s in buf.iter_mut() {
             let input = *s * FIXED_GAIN;
