@@ -14,14 +14,16 @@ use eframe::egui::{self, CornerRadius, FontId, Margin, RichText, Stroke};
 use rustrig_audio::{
     BackendKind, DeviceLists, LatencyInfo, RunningStream, StreamConfig, open_stream,
 };
-use rustrig_dsp::{CabIr, Chain, Drive, Gain, Gate, MeterHandle, PeakMeter, Reverb, SharedParam};
+use rustrig_dsp::{
+    CabIr, Chain, Drive, Gain, Gate, MeterHandle, Nam, PeakMeter, Reverb, SharedParam,
+};
 use widgets as w;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([470.0, 790.0])
-            .with_min_inner_size([440.0, 720.0]),
+            .with_inner_size([480.0, 870.0])
+            .with_min_inner_size([450.0, 780.0]),
         ..Default::default()
     };
     eframe::run_native(
@@ -45,6 +47,10 @@ struct RigApp {
     disp_db: f32,
     clip_until: Option<Instant>,
 
+    // ── 輸入增益（前級，鏈最前面）──
+    input_db_v: f32,
+    input_gain: SharedParam,
+
     // ── 雜訊閘（破音前）──
     gate_v: f32, // 0..1 強度
     gate_amt: SharedParam,
@@ -58,6 +64,15 @@ struct RigApp {
     tone_hz: SharedParam,
     drive_on_p: SharedParam,
     drive_on: bool,
+
+    // ── NAM 擴大機（破音後、cab 前）──
+    nam_on_p: SharedParam,
+    nam_on: bool,
+    /// .nam 檔內容（已驗證）；換模型需重建 chain
+    nam_json: Option<String>,
+    nam_name: Option<String>,
+    /// 模型訓練取樣率（提示與引擎取樣率是否相符）
+    nam_sr: Option<f64>,
 
     // ── IR cab ──
     cab_on_p: SharedParam,
@@ -115,6 +130,8 @@ impl RigApp {
             meter: MeterHandle::new(),
             disp_db: -80.0,
             clip_until: None,
+            input_db_v: 0.0,
+            input_gain: SharedParam::new(1.0),
             gate_v: 0.0,
             gate_amt: SharedParam::new(0.0),
             gate_on_p: SharedParam::new(0.0),
@@ -125,6 +142,11 @@ impl RigApp {
             tone_hz: SharedParam::new(tone_norm_to_hz(0.65)),
             drive_on_p: SharedParam::new(1.0),
             drive_on: true,
+            nam_on_p: SharedParam::new(0.0),
+            nam_on: false,
+            nam_json: None,
+            nam_name: None,
+            nam_sr: None,
             cab_on_p: SharedParam::new(1.0),
             cab_on: true,
             ir: None,
@@ -144,7 +166,8 @@ impl RigApp {
 
     fn start(&mut self) {
         let mut chain = Chain::new();
-        // 訊號鏈：閘（破音前）→ 破音 → cab → 殘響 → 音量 → 峰值表
+        // 訊號鏈：輸入增益 → 閘 → 破音(boost) → NAM 音箱 → cab → 殘響 → 音量 → 峰值表
+        chain.push(Box::new(Gain::new(self.input_gain.clone())));
         chain.push(Box::new(Gate::new(
             self.gate_amt.clone(),
             self.gate_on_p.clone(),
@@ -154,6 +177,9 @@ impl RigApp {
             self.tone_hz.clone(),
             self.drive_on_p.clone(),
         )));
+        if let Some(json) = &self.nam_json {
+            chain.push(Box::new(Nam::new(json.clone(), self.nam_on_p.clone())));
+        }
         if let Some((raw, sr)) = &self.ir {
             chain.push(Box::new(CabIr::new(raw.clone(), *sr, self.cab_on_p.clone())));
         }
@@ -163,7 +189,14 @@ impl RigApp {
         )));
         chain.push(Box::new(Gain::new(self.volume.clone())));
         chain.push(Box::new(PeakMeter::new(self.meter.clone())));
+        // NAM 開啟 → 目標 48kHz（對上模型）；關閉 → 44.1kHz。僅 ASIO 後端會據此
+        // 實際切換驅動取樣率；WASAPI 取樣率由 Windows 裝置設定決定，程式改不動。
         let config = StreamConfig {
+            sample_rate: if self.nam_on && self.nam_json.is_some() {
+                48_000
+            } else {
+                44_100
+            },
             capture_id: self.sel_capture.clone(),
             render_id: self.sel_render.clone(),
             asio_driver: self.sel_asio_driver.clone(),
@@ -313,6 +346,80 @@ impl RigApp {
         }
     }
 
+    /// 找預設 .nam：先看執行檔旁的 models/，再看當前目錄的 models/（dev）。取第一顆。
+    fn find_default_nam(&self) -> Option<std::path::PathBuf> {
+        let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+        if let Ok(exe) = std::env::current_exe()
+            && let Some(d) = exe.parent()
+        {
+            dirs.push(d.join("models"));
+        }
+        dirs.push(std::path::PathBuf::from("models"));
+        for dir in dirs {
+            let Ok(rd) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|s| s.to_str()) == Some("nam") {
+                    return Some(p);
+                }
+            }
+        }
+        None
+    }
+
+    /// 自動載入預設 .nam（開 AMP 時用）。成功回 true。
+    fn load_default_nam(&mut self) -> bool {
+        let Some(path) = self.find_default_nam() else {
+            return false;
+        };
+        let Ok(json) = std::fs::read_to_string(&path) else {
+            return false;
+        };
+        match rustrig_dsp::nam::validate(&json) {
+            Ok(info) => {
+                self.nam_name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+                self.nam_sr = Some(info.sample_rate);
+                self.nam_json = Some(json);
+                self.nam_on = true;
+                self.nam_on_p.set(1.0);
+                self.error = None;
+                self.restart_if_running();
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    fn pick_nam(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("NAM 模型", &["nam"])
+            .pick_file()
+        else {
+            return;
+        };
+        let json = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                self.error = Some(format!("NAM 讀檔失敗：{e}"));
+                return;
+            }
+        };
+        match rustrig_dsp::nam::validate(&json) {
+            Ok(info) => {
+                self.nam_name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+                self.nam_sr = Some(info.sample_rate);
+                self.nam_json = Some(json);
+                self.nam_on = true;
+                self.nam_on_p.set(1.0);
+                self.error = None;
+                self.restart_if_running();
+            }
+            Err(e) => self.error = Some(format!("NAM 載入失敗：{e}")),
+        }
+    }
+
     fn pick_ir(&mut self) {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("脈衝響應 WAV", &["wav"])
@@ -436,8 +543,13 @@ impl eframe::App for RigApp {
                         ui.add_space(10.0);
                         ui.vertical(|ui| {
                             ui.add_space(10.0);
-                            // ── 第一排：破音雙旋鈕（live）──
+                            // ── 第一排：輸入增益 + 破音雙旋鈕（live）──
                             ui.horizontal(|ui| {
+                                if w::knob(ui, "INPUT", &mut self.input_db_v, -24.0, 24.0, 0.0, w::VIOLET, true, &|v| {
+                                    format!("{v:+.0}dB")
+                                }) {
+                                    self.input_gain.set(w::db_to_gain(self.input_db_v));
+                                }
                                 if w::knob(ui, "DRIVE", &mut self.drive_db_v, 0.0, 40.0, 18.0, w::AMBER, true, &|v| {
                                     format!("{v:.0}dB")
                                 }) {
@@ -464,7 +576,7 @@ impl eframe::App for RigApp {
                                 }
                             });
                             ui.add_space(6.0);
-                            // ── 開關列（訊號順序：閘 → 破音 → cab → 殘響）──
+                            // ── 開關列（訊號順序：閘 → 破音 → 音箱 → cab → 殘響）──
                             ui.horizontal_wrapped(|ui| {
                                 ui.add_space(2.0);
                                 if w::led_toggle(ui, "GATE", self.gate_on, w::PINK).clicked() {
@@ -477,6 +589,23 @@ impl eframe::App for RigApp {
                                     self.drive_on_p.set(if self.drive_on { 1.0 } else { 0.0 });
                                 }
                                 ui.add_space(4.0);
+                                if w::led_toggle(ui, "AMP", self.nam_on, w::PURPLE).clicked() {
+                                    if self.nam_json.is_none() {
+                                        // 還沒載模型 → 自動載入 models/ 內的預設 .nam
+                                        if !self.load_default_nam() {
+                                            self.error = Some(
+                                                "找不到預設 .nam（把模型放進 models/，或用下方「載入 .nam…」）"
+                                                    .into(),
+                                            );
+                                        }
+                                    } else {
+                                        self.nam_on = !self.nam_on;
+                                        self.nam_on_p.set(if self.nam_on { 1.0 } else { 0.0 });
+                                        // 重啟以套用取樣率切換（ASIO：48k↔44.1k）
+                                        self.restart_if_running();
+                                    }
+                                }
+                                ui.add_space(4.0);
                                 if w::led_toggle(ui, "CAB", self.cab_on, w::MAGENTA).clicked() {
                                     self.cab_on = !self.cab_on;
                                     self.cab_on_p.set(if self.cab_on { 1.0 } else { 0.0 });
@@ -487,6 +616,40 @@ impl eframe::App for RigApp {
                                     self.reverb_on_p.set(if self.reverb_on { 1.0 } else { 0.0 });
                                 }
                             });
+                            ui.add_space(8.0);
+                            // ── NAM 音箱載入列 ──
+                            ui.horizontal(|ui| {
+                                ui.add_space(2.0);
+                                if ui
+                                    .button(RichText::new("載入 .nam…").size(10.5))
+                                    .on_hover_text("選一個 NAM 擴大機模型 .nam")
+                                    .clicked()
+                                {
+                                    self.pick_nam();
+                                }
+                                let (name, col) = match &self.nam_name {
+                                    Some(n) => (n.as_str(), w::PURPLE),
+                                    None => ("未載入（AMP 不作用）", w::FAINT),
+                                };
+                                ui.label(RichText::new(name).color(col).size(9.5));
+                            });
+                            // 取樣率不符提示
+                            if let Some(msr) = self.nam_sr
+                                && let Some(lat) = &self.latency
+                                && (msr as u32).abs_diff(lat.sample_rate) > 1
+                            {
+                                ui.horizontal(|ui| {
+                                    ui.add_space(2.0);
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "⚠ 介面 {}Hz ≠ 模型 {:.0}Hz，音色偏移，建議介面設 {:.0}Hz",
+                                            lat.sample_rate, msr, msr
+                                        ))
+                                        .color(w::AMBER)
+                                        .size(9.0),
+                                    );
+                                });
+                            }
                             ui.add_space(8.0);
                             // ── IR 載入列 ──
                             ui.horizontal(|ui| {

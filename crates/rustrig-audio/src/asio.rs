@@ -198,6 +198,22 @@ fn run_asio(
             .map_err(|e| BackendError::Os(format!("查 ASIO 輸出格式失敗：{e}")))?,
     )?;
 
+    // 若 config 指定了目標取樣率且驅動支援，切過去（NAM 開啟自動切 48k 用）。
+    if config.sample_rate > 0 {
+        let target = config.sample_rate as f64;
+        let cur = driver.sample_rate().unwrap_or(0.0);
+        if (cur - target).abs() > 1.0 {
+            if driver.can_sample_rate(target).unwrap_or(false) {
+                match driver.set_sample_rate(target) {
+                    Ok(()) => eprintln!("[asio] 取樣率切到 {target}Hz"),
+                    Err(e) => eprintln!("[asio] 切換取樣率到 {target}Hz 失敗：{e}"),
+                }
+            } else {
+                eprintln!("[asio] 驅動不支援 {target}Hz，維持 {cur}Hz");
+            }
+        }
+    }
+
     let sample_rate = driver
         .sample_rate()
         .map_err(|e| BackendError::Os(format!("查 ASIO 取樣率失敗：{e}")))? as u32;

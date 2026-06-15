@@ -10,11 +10,13 @@
 pub mod cab;
 pub mod drive;
 pub mod gate;
+pub mod nam;
 pub mod reverb;
 
 pub use cab::CabIr;
 pub use drive::Drive;
 pub use gate::Gate;
+pub use nam::Nam;
 pub use reverb::Reverb;
 
 use std::sync::Arc;

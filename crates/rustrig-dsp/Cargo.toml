@@ -6,3 +6,4 @@ license.workspace = true
 
 [dependencies]
 fft-convolver = "0.3.0"
+nam-rs = "0.3.0"
