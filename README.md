@@ -14,7 +14,7 @@
 
 > 設計製作 · **Isan（13soul）** — 全端設計工程師 · 影像及音樂創作人
 
-> ⚠️ **早期版（alpha）**：目前是「直通 + 破音 + cab IR + gate + reverb」的低延遲框架。**真正的擴大機模型（NAM / amp sim）還沒做**——破音目前是 amp 前的 boost，不是完整音箱。拿來試延遲、試 cab IR、試效果鏈沒問題，但別期待完整 amp 音色。歡迎回饋。
+> ⚠️ **早期版（alpha）**：效果鏈已含 gate / comp / drive / **NAM 擴大機** / cab IR / delay / reverb 與節拍器、預設存讀，低延遲框架穩定。NAM 與 IR 需自備檔案（見下）。各效果仍在調音中，歡迎回饋。
 
 ---
 
@@ -24,11 +24,16 @@
   - **WASAPI 共享** — 免設定、相容性最好（延遲較高，約 60ms+）
   - **WASAPI 獨佔** — 繞過 Windows 音訊引擎，個位數～十幾 ms（實測 RME UCX II ~12ms）
   - **ASIO** — 專業驅動直連，最低延遲 3-7ms（需自行從原始碼編譯，見下）
-- **效果鏈**（訊號順序）：`GATE 雜訊閘 → DRIVE 破音 → CAB 箱體 IR → REVERB 殘響 → 音量`
-  - **DRIVE / TONE**：4× 升頻非對稱 soft-clip 破音 + 二階 TONE 低通
-  - **CAB**：載入你自己的箱體脈衝響應（.wav IR），分割 FFT 卷積
+- **效果鏈**（訊號順序）：`GATE 雜訊閘 → COMP 壓縮 → DRIVE 破音 → AMP(NAM) → CAB 箱體 IR → DELAY 延遲 → REVERB 殘響 → 音量 → 節拍器`
   - **GATE**：高增益消底噪用的雜訊閘（快開慢關 + 遲滯）
+  - **COMP**：feed-forward 壓縮，單鈕帶動門檻 + 比例，軟膝、快攻慢放，可補償增益
+  - **DRIVE / TONE**：4× 升頻非對稱 soft-clip 破音 + 二階 TONE 低通
+  - **AMP**：NAM（Neural Amp Modeler）擴大機模型，載入 `.nam` 權重
+  - **CAB**：載入你自己的箱體脈衝響應（.wav IR），分割 FFT 卷積
+  - **DELAY**：回授延遲，分數延遲內插 + 回授阻尼，可手動 ms 或 **BPM 同步**（♩/♪./♪/♩3）
   - **REVERB**：Freeverb 風格殘響
+  - **節拍器**：依全域 BPM 出 click（第 1 拍重音），Tap Tempo 抓拍，與 delay 同步共用拍速
+- **預設存讀**：整條鏈參數一鍵存成 `.json` / 載回（`%APPDATA%\RustRig\presets`）
 - 全程 lock-free（GUI ↔ 音訊執行緒），即時執行緒零配置／零鎖
 
 ## 系統需求
