@@ -701,6 +701,21 @@ impl eframe::App for RigApp {
                 // ── footer ──
                 ui.add_space(10.0);
                 w::divider_title(ui, "Isan · 13soul", 44.0);
+                ui.add_space(4.0);
+                ui.vertical_centered(|ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("關於 · 版權").color(w::FAINT).size(9.5),
+                            )
+                            .frame(false),
+                        )
+                        .on_hover_text("重新開啟關於 / 版權視窗")
+                        .clicked()
+                    {
+                        self.show_about = true;
+                    }
+                });
             });
 
         // ── 開啟時的「關於 / 版權」視窗（疊在最上層）──
