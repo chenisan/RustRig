@@ -98,6 +98,10 @@ struct RigApp {
     reverb_mix: SharedParam,
     reverb_on_p: SharedParam,
     reverb_on: bool,
+
+    // ── 開啟時的「關於 / 版權」視窗 ──
+    show_about: bool,
+    about_dont_show: bool,
 }
 
 /// ComboBox 顯示用：依選擇的 ID 找名稱。
@@ -161,6 +165,9 @@ impl RigApp {
             reverb_mix: SharedParam::new(0.3),
             reverb_on_p: SharedParam::new(0.0),
             reverb_on: false,
+            // 第一次開啟才顯示；勾過「不再顯示」後標記檔存在 → 不再彈
+            show_about: !about_seen(),
+            about_dont_show: true,
         }
     }
 
@@ -695,6 +702,135 @@ impl eframe::App for RigApp {
                 ui.add_space(10.0);
                 w::divider_title(ui, "Isan · 13soul", 44.0);
             });
+
+        // ── 開啟時的「關於 / 版權」視窗（疊在最上層）──
+        if self.show_about {
+            about_modal(&ctx, self);
+        }
+    }
+}
+
+/// 作者連結（與 README / NOTICE 同一組）。
+const ABOUT_LINKS: [(&str, &str); 5] = [
+    ("官方網站", "https://www.poofone.com.tw/"),
+    ("Threads · @isan1314558", "https://www.threads.com/@isan1314558"),
+    ("YouTube · @13Neosoul", "https://www.youtube.com/@13Neosoul"),
+    ("Instagram · @isan1314558", "https://www.instagram.com/isan1314558/"),
+    ("Facebook 社團 · AI 工具討論", "https://www.facebook.com/groups/26340062805675868"),
+];
+
+/// 「不再顯示」標記檔路徑（%APPDATA%\RustRig\about_seen）。
+fn about_marker_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("APPDATA")
+        .map(|a| std::path::PathBuf::from(a).join("RustRig").join("about_seen"))
+}
+
+fn about_seen() -> bool {
+    about_marker_path().is_some_and(|p| p.exists())
+}
+
+fn mark_about_seen() {
+    if let Some(p) = about_marker_path() {
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&p, b"1");
+    }
+}
+
+/// 開啟時的「關於 / 版權」modal：字標 + 簡介 + 署名 + 授權聲明 + 作者連結。
+/// 比照 AudioSFX 的啟動關於頁。點「進入」、modal 外或 Esc 皆關閉。
+fn about_modal(ctx: &egui::Context, app: &mut RigApp) {
+    let resp = egui::Modal::new(egui::Id::new("about_modal")).show(ctx, |ui| {
+        ui.set_width(380.0);
+
+        // ── 字標 + 版本 ──
+        ui.vertical_centered(|ui| {
+            let mut job = egui::text::LayoutJob::default();
+            let f = FontId::proportional(32.0);
+            job.append("Rust", 0.0, egui::TextFormat {
+                font_id: f.clone(),
+                color: w::PURPLE,
+                ..Default::default()
+            });
+            job.append("Rig", 0.0, egui::TextFormat {
+                font_id: f,
+                color: w::MAGENTA,
+                ..Default::default()
+            });
+            ui.label(job);
+            ui.label(
+                RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
+                    .color(w::FAINT)
+                    .size(10.0)
+                    .monospace(),
+            );
+        });
+        ui.add_space(12.0);
+
+        // ── 簡介 ──
+        ui.label(
+            RichText::new(
+                "用 Rust 寫的 Windows 獨立電吉他即時效果處理器——低延遲音訊引擎 + 破音 / 箱體 IR / 雜訊閘 / 殘響，對標 Neural DSP 的 standalone 模式。",
+            )
+            .color(w::DIM)
+            .size(11.0),
+        );
+        ui.add_space(10.0);
+
+        // ── 署名 ──
+        ui.label(RichText::new("設計製作 · Isan（13soul）").color(w::PURPLE).size(13.0));
+        ui.label(
+            RichText::new("全端設計工程師 · 影像及音樂創作人")
+                .color(w::DIM)
+                .size(10.0),
+        );
+        ui.add_space(10.0);
+
+        // ── 授權聲明 ──
+        ui.label(
+            RichText::new(
+                "本程式以 Apache-2.0 釋出。ASIO 為 Steinberg 商標，本程式不附 ASIO SDK；NAM 模型與箱體 IR 版權屬各自權利人，不隨附、不轉散。第三方授權見 NOTICE.md。",
+            )
+            .color(w::FAINT)
+            .size(9.0),
+        );
+        ui.add_space(12.0);
+
+        // ── 作者連結 ──
+        ui.label(RichText::new("連結").color(w::DIM).size(10.0));
+        ui.add_space(4.0);
+        for (label, url) in ABOUT_LINKS {
+            ui.hyperlink_to(RichText::new(label).color(w::CYAN).size(10.5), url);
+        }
+        ui.add_space(14.0);
+
+        ui.separator();
+        ui.add_space(8.0);
+
+        // ── 不再顯示 + 進入 ──
+        ui.horizontal(|ui| {
+            ui.checkbox(
+                &mut app.about_dont_show,
+                RichText::new("不再顯示").size(10.5).color(w::DIM),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button(RichText::new("進入").size(12.0)).clicked() {
+                    if app.about_dont_show {
+                        mark_about_seen();
+                    }
+                    app.show_about = false;
+                }
+            });
+        });
+    });
+
+    // 點 modal 外或 Esc → 同樣關閉（尊重「不再顯示」勾選）
+    if resp.should_close() {
+        if app.about_dont_show {
+            mark_about_seen();
+        }
+        app.show_about = false;
     }
 }
 
