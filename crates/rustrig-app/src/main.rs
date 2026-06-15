@@ -15,15 +15,15 @@ use rustrig_audio::{
     BackendKind, DeviceLists, LatencyInfo, RunningStream, StreamConfig, open_stream,
 };
 use rustrig_dsp::{
-    CabIr, Chain, Drive, Gain, Gate, MeterHandle, Nam, PeakMeter, Reverb, SharedParam,
+    CabIr, Chain, Compressor, Drive, Gain, Gate, MeterHandle, Nam, PeakMeter, Reverb, SharedParam,
 };
 use widgets as w;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([480.0, 870.0])
-            .with_min_inner_size([450.0, 780.0]),
+            .with_inner_size([480.0, 940.0])
+            .with_min_inner_size([450.0, 820.0]),
         ..Default::default()
     };
     eframe::run_native(
@@ -56,6 +56,14 @@ struct RigApp {
     gate_amt: SharedParam,
     gate_on_p: SharedParam,
     gate_on: bool,
+
+    // ── 壓縮（閘後、破音前）──
+    comp_v: f32,       // 0..1 壓縮量
+    makeup_db_v: f32,  // 補償 dB
+    comp_amt: SharedParam,
+    comp_makeup: SharedParam,
+    comp_on_p: SharedParam,
+    comp_on: bool,
 
     // ── 破音 ──
     drive_db_v: f32,
@@ -140,6 +148,12 @@ impl RigApp {
             gate_amt: SharedParam::new(0.0),
             gate_on_p: SharedParam::new(0.0),
             gate_on: false,
+            comp_v: 0.4,
+            makeup_db_v: 0.0,
+            comp_amt: SharedParam::new(0.4),
+            comp_makeup: SharedParam::new(0.0),
+            comp_on_p: SharedParam::new(0.0),
+            comp_on: false,
             drive_db_v: 18.0,
             tone_norm: 0.65,
             drive_db: SharedParam::new(18.0),
@@ -173,11 +187,16 @@ impl RigApp {
 
     fn start(&mut self) {
         let mut chain = Chain::new();
-        // 訊號鏈：輸入增益 → 閘 → 破音(boost) → NAM 音箱 → cab → 殘響 → 音量 → 峰值表
+        // 訊號鏈：輸入增益 → 閘 → 壓縮 → 破音(boost) → NAM 音箱 → cab → 殘響 → 音量 → 峰值表
         chain.push(Box::new(Gain::new(self.input_gain.clone())));
         chain.push(Box::new(Gate::new(
             self.gate_amt.clone(),
             self.gate_on_p.clone(),
+        )));
+        chain.push(Box::new(Compressor::new(
+            self.comp_amt.clone(),
+            self.comp_makeup.clone(),
+            self.comp_on_p.clone(),
         )));
         chain.push(Box::new(Drive::new(
             self.drive_db.clone(),
@@ -569,13 +588,26 @@ impl eframe::App for RigApp {
                                     self.tone_hz.set(tone_norm_to_hz(self.tone_norm));
                                 }
                             });
-                            // ── 第二排：閘 / 殘響（live）──
+                            // ── 第二排：閘 / 壓縮 / 補償（live）──
                             ui.horizontal(|ui| {
                                 if w::knob(ui, "GATE", &mut self.gate_v, 0.0, 1.0, 0.0, w::PINK, true, &|v| {
                                     format!("{:.0}%", v * 100.0)
                                 }) {
                                     self.gate_amt.set(self.gate_v);
                                 }
+                                if w::knob(ui, "COMP", &mut self.comp_v, 0.0, 1.0, 0.4, w::YELLOW, true, &|v| {
+                                    format!("{:.0}%", v * 100.0)
+                                }) {
+                                    self.comp_amt.set(self.comp_v);
+                                }
+                                if w::knob(ui, "LEVEL", &mut self.makeup_db_v, 0.0, 18.0, 0.0, w::YELLOW, true, &|v| {
+                                    format!("{v:+.0}dB")
+                                }) {
+                                    self.comp_makeup.set(self.makeup_db_v);
+                                }
+                            });
+                            // ── 第三排：殘響（live）──
+                            ui.horizontal(|ui| {
                                 if w::knob(ui, "REVERB", &mut self.reverb_v, 0.0, 1.0, 0.3, w::GREEN, true, &|v| {
                                     format!("{:.0}%", v * 100.0)
                                 }) {
@@ -589,6 +621,11 @@ impl eframe::App for RigApp {
                                 if w::led_toggle(ui, "GATE", self.gate_on, w::PINK).clicked() {
                                     self.gate_on = !self.gate_on;
                                     self.gate_on_p.set(if self.gate_on { 1.0 } else { 0.0 });
+                                }
+                                ui.add_space(4.0);
+                                if w::led_toggle(ui, "COMP", self.comp_on, w::YELLOW).clicked() {
+                                    self.comp_on = !self.comp_on;
+                                    self.comp_on_p.set(if self.comp_on { 1.0 } else { 0.0 });
                                 }
                                 ui.add_space(4.0);
                                 if w::led_toggle(ui, "DRIVE", self.drive_on, w::AMBER).clicked() {

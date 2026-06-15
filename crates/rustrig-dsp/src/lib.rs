@@ -8,12 +8,14 @@
 #![forbid(unsafe_code)]
 
 pub mod cab;
+pub mod comp;
 pub mod drive;
 pub mod gate;
 pub mod nam;
 pub mod reverb;
 
 pub use cab::CabIr;
+pub use comp::Compressor;
 pub use drive::Drive;
 pub use gate::Gate;
 pub use nam::Nam;
