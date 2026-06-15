@@ -9,15 +9,19 @@
 
 pub mod cab;
 pub mod comp;
+pub mod delay;
 pub mod drive;
 pub mod gate;
+pub mod metro;
 pub mod nam;
 pub mod reverb;
 
 pub use cab::CabIr;
 pub use comp::Compressor;
+pub use delay::Delay;
 pub use drive::Drive;
 pub use gate::Gate;
+pub use metro::Metronome;
 pub use nam::Nam;
 pub use reverb::Reverb;
 

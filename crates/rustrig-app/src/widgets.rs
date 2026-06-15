@@ -20,6 +20,7 @@ pub const MAGENTA: Color32 = Color32::from_rgb(236, 72, 153); // #ec4899
 pub const PINK: Color32 = Color32::from_rgb(233, 69, 96); // #e94560
 pub const AMBER: Color32 = Color32::from_rgb(245, 158, 11); // #f59e0b
 pub const CYAN: Color32 = Color32::from_rgb(34, 211, 238); // #22d3ee
+pub const TEAL: Color32 = Color32::from_rgb(45, 212, 191); // #2dd4bf delay
 pub const GREEN: Color32 = Color32::from_rgb(34, 197, 94); // #22c55e
 pub const YELLOW: Color32 = Color32::from_rgb(234, 179, 8); // #eab308
 pub const RED: Color32 = Color32::from_rgb(239, 68, 68); // #ef4444

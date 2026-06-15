@@ -15,15 +15,16 @@ use rustrig_audio::{
     BackendKind, DeviceLists, LatencyInfo, RunningStream, StreamConfig, open_stream,
 };
 use rustrig_dsp::{
-    CabIr, Chain, Compressor, Drive, Gain, Gate, MeterHandle, Nam, PeakMeter, Reverb, SharedParam,
+    CabIr, Chain, Compressor, Delay, Drive, Gain, Gate, MeterHandle, Metronome, Nam, PeakMeter,
+    Reverb, SharedParam,
 };
 use widgets as w;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([480.0, 940.0])
-            .with_min_inner_size([450.0, 820.0]),
+            .with_inner_size([480.0, 1020.0])
+            .with_min_inner_size([450.0, 880.0]),
         ..Default::default()
     };
     eframe::run_native(
@@ -101,11 +102,34 @@ struct RigApp {
     /// 選定的 ASIO 驅動（None = 第一個可用）
     sel_asio_driver: Option<String>,
 
-    // ── 殘響（cab 後）──
+    // ── 延遲（cab 後、殘響前）──
+    delay_time_v: f32, // ms（手動模式）
+    delay_fb_v: f32,   // 回授 0..0.95
+    delay_mix_v: f32,  // 濕量 0..1
+    delay_time_ms: SharedParam, // 實際餵 DSP 的 ms（手動 or BPM 換算）
+    delay_fb: SharedParam,
+    delay_mix: SharedParam,
+    delay_on_p: SharedParam,
+    delay_on: bool,
+    delay_sync: bool,   // 開 → 延遲時間吃 BPM
+    delay_div: NoteDiv, // 同步音符
+
+    // ── 殘響（delay 後）──
     reverb_v: f32, // 0..1 濕量
     reverb_mix: SharedParam,
     reverb_on_p: SharedParam,
     reverb_on: bool,
+
+    // ── 全域拍速（delay sync + 節拍器共用）──
+    bpm_v: f32,
+    bpm: SharedParam,
+    tap_times: Vec<Instant>,
+
+    // ── 節拍器（音量後）──
+    metro_level_v: f32,
+    metro_level: SharedParam,
+    metro_on_p: SharedParam,
+    metro_on: bool,
 
     // ── 開啟時的「關於 / 版權」視窗 ──
     show_about: bool,
@@ -127,6 +151,40 @@ fn device_label(list: &[rustrig_audio::DeviceInfo], sel: &Option<String>) -> Str
 /// 0..1 → 500..5000 Hz（一個 decade 的對數刻度，落在 cab 也聽得到的頻段）
 fn tone_norm_to_hz(norm: f32) -> f32 {
     500.0 * 10f32.powf(norm.clamp(0.0, 1.0))
+}
+
+/// delay 同步音符。factor × 四分音符時值 = 延遲時間。
+#[derive(Clone, Copy, PartialEq)]
+enum NoteDiv {
+    Quarter,      // ♩
+    DottedEighth, // ♪.
+    Eighth,       // ♪
+    Triplet,      // ♩3（四分三連音 = 2/3 四分）
+}
+
+impl NoteDiv {
+    const ALL: [NoteDiv; 4] = [
+        NoteDiv::Quarter,
+        NoteDiv::DottedEighth,
+        NoteDiv::Eighth,
+        NoteDiv::Triplet,
+    ];
+    fn factor(self) -> f32 {
+        match self {
+            NoteDiv::Quarter => 1.0,
+            NoteDiv::DottedEighth => 0.75,
+            NoteDiv::Eighth => 0.5,
+            NoteDiv::Triplet => 2.0 / 3.0,
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            NoteDiv::Quarter => "♩ 1/4",
+            NoteDiv::DottedEighth => "♪. 1/8.",
+            NoteDiv::Eighth => "♪ 1/8",
+            NoteDiv::Triplet => "♩3 1/4T",
+        }
+    }
 }
 
 impl RigApp {
@@ -175,10 +233,27 @@ impl RigApp {
             backend: BackendKind::WasapiShared,
             asio_drivers: rustrig_audio::asio_driver_names(),
             sel_asio_driver: None,
+            delay_time_v: 350.0,
+            delay_fb_v: 0.35,
+            delay_mix_v: 0.3,
+            delay_time_ms: SharedParam::new(350.0),
+            delay_fb: SharedParam::new(0.35),
+            delay_mix: SharedParam::new(0.3),
+            delay_on_p: SharedParam::new(0.0),
+            delay_on: false,
+            delay_sync: false,
+            delay_div: NoteDiv::Eighth,
             reverb_v: 0.3,
             reverb_mix: SharedParam::new(0.3),
             reverb_on_p: SharedParam::new(0.0),
             reverb_on: false,
+            bpm_v: 120.0,
+            bpm: SharedParam::new(120.0),
+            tap_times: Vec::new(),
+            metro_level_v: 0.6,
+            metro_level: SharedParam::new(0.6),
+            metro_on_p: SharedParam::new(0.0),
+            metro_on: false,
             // 第一次開啟才顯示；勾過「不再顯示」後標記檔存在 → 不再彈
             show_about: !about_seen(),
             about_dont_show: true,
@@ -187,7 +262,7 @@ impl RigApp {
 
     fn start(&mut self) {
         let mut chain = Chain::new();
-        // 訊號鏈：輸入增益 → 閘 → 壓縮 → 破音(boost) → NAM 音箱 → cab → 殘響 → 音量 → 峰值表
+        // 訊號鏈：輸入增益 → 閘 → 壓縮 → 破音 → NAM 音箱 → cab → 延遲 → 殘響 → 音量 → 節拍器 → 峰值表
         chain.push(Box::new(Gain::new(self.input_gain.clone())));
         chain.push(Box::new(Gate::new(
             self.gate_amt.clone(),
@@ -209,11 +284,22 @@ impl RigApp {
         if let Some((raw, sr)) = &self.ir {
             chain.push(Box::new(CabIr::new(raw.clone(), *sr, self.cab_on_p.clone())));
         }
+        chain.push(Box::new(Delay::new(
+            self.delay_time_ms.clone(),
+            self.delay_fb.clone(),
+            self.delay_mix.clone(),
+            self.delay_on_p.clone(),
+        )));
         chain.push(Box::new(Reverb::new(
             self.reverb_mix.clone(),
             self.reverb_on_p.clone(),
         )));
         chain.push(Box::new(Gain::new(self.volume.clone())));
+        chain.push(Box::new(Metronome::new(
+            self.bpm.clone(),
+            self.metro_level.clone(),
+            self.metro_on_p.clone(),
+        )));
         chain.push(Box::new(PeakMeter::new(self.meter.clone())));
         // NAM 開啟 → 目標 48kHz（對上模型）；關閉 → 44.1kHz。僅 ASIO 後端會據此
         // 實際切換驅動取樣率；WASAPI 取樣率由 Windows 裝置設定決定，程式改不動。
@@ -254,6 +340,80 @@ impl RigApp {
             self.stop();
             self.start();
         }
+    }
+
+    /// 目前生效的延遲時間（ms）：同步時吃 BPM，否則用手動值。
+    fn delay_effective_ms(&self) -> f32 {
+        if self.delay_sync {
+            let quarter = 60_000.0 / self.bpm_v.clamp(40.0, 240.0);
+            (quarter * self.delay_div.factor()).clamp(1.0, 2000.0)
+        } else {
+            self.delay_time_v
+        }
+    }
+
+    /// Tap tempo：用最近數次點擊的平均間隔估 BPM（間隔 >2s 視為重新數）。
+    fn tap(&mut self) {
+        let now = Instant::now();
+        if let Some(&last) = self.tap_times.last()
+            && now.duration_since(last).as_secs_f32() > 2.0
+        {
+            self.tap_times.clear();
+        }
+        self.tap_times.push(now);
+        let n = self.tap_times.len();
+        if n > 4 {
+            self.tap_times.drain(0..n - 4);
+        }
+        if self.tap_times.len() >= 2 {
+            let span = self
+                .tap_times
+                .last()
+                .unwrap()
+                .duration_since(self.tap_times[0])
+                .as_secs_f32();
+            let intervals = (self.tap_times.len() - 1) as f32;
+            if span > 1e-3 {
+                self.bpm_v = (60.0 * intervals / span).clamp(40.0, 240.0);
+            }
+        }
+    }
+
+    /// 節拍 / 練習卡：節拍器開關 + BPM + Tap + 音量。BPM 與 delay sync 共用。
+    fn tempo_card(&mut self, ui: &mut egui::Ui) {
+        panel_frame().show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if w::led_toggle(ui, "節拍器", self.metro_on, w::VIOLET).clicked() {
+                    self.metro_on = !self.metro_on;
+                    self.metro_on_p.set(if self.metro_on { 1.0 } else { 0.0 });
+                }
+                ui.add_space(10.0);
+                ui.label(RichText::new("BPM").color(w::DIM).size(11.0));
+                ui.add(
+                    egui::DragValue::new(&mut self.bpm_v)
+                        .range(40.0..=240.0)
+                        .speed(0.5)
+                        .fixed_decimals(0),
+                )
+                .on_hover_text("拖曳或輸入拍速（delay 同步也用這個）");
+                ui.add_space(8.0);
+                if ui
+                    .button(RichText::new("TAP").size(11.0).color(w::VIOLET))
+                    .on_hover_text("照節奏連點 → 自動抓拍速")
+                    .clicked()
+                {
+                    self.tap();
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add(
+                        egui::Slider::new(&mut self.metro_level_v, 0.0..=1.0)
+                            .show_value(false),
+                    )
+                    .on_hover_text("節拍器音量");
+                    ui.label(RichText::new("音量").color(w::DIM).size(10.0));
+                });
+            });
+        });
     }
 
     /// 裝置選擇卡：輸入／輸出 ComboBox + 重新整理。換裝置即時生效。
@@ -520,6 +680,11 @@ impl eframe::App for RigApp {
 
         ctx.request_repaint_after(Duration::from_millis(if self.running() { 33 } else { 250 }));
 
+        // 每幀把拍速 / 生效延遲時間 / 節拍器音量推給 RT（sync 隨 BPM 即時連動）
+        self.bpm.set(self.bpm_v);
+        self.delay_time_ms.set(self.delay_effective_ms());
+        self.metro_level.set(self.metro_level_v);
+
         egui::Frame::new()
             .fill(w::BG)
             .inner_margin(Margin::same(22))
@@ -606,13 +771,49 @@ impl eframe::App for RigApp {
                                     self.comp_makeup.set(self.makeup_db_v);
                                 }
                             });
-                            // ── 第三排：殘響（live）──
+                            // ── 第三排：延遲（TIME 同步時 ghost）+ 殘響 ──
                             ui.horizontal(|ui| {
+                                // TIME：同步開啟時改吃 BPM，旋鈕變 ghost；實際 ms 每幀推送
+                                let _ = w::knob(ui, "DELAY", &mut self.delay_time_v, 40.0, 1000.0, 350.0, w::TEAL, !self.delay_sync, &|v| {
+                                    if v >= 1000.0 { format!("{:.2}s", v / 1000.0) } else { format!("{v:.0}ms") }
+                                });
+                                if w::knob(ui, "FB", &mut self.delay_fb_v, 0.0, 0.95, 0.35, w::TEAL, true, &|v| {
+                                    format!("{:.0}%", v * 100.0)
+                                }) {
+                                    self.delay_fb.set(self.delay_fb_v);
+                                }
                                 if w::knob(ui, "REVERB", &mut self.reverb_v, 0.0, 1.0, 0.3, w::GREEN, true, &|v| {
                                     format!("{:.0}%", v * 100.0)
                                 }) {
                                     self.reverb_mix.set(self.reverb_v);
                                 }
+                            });
+                            // ── 延遲同步列：MIX + SYNC + 音符 ──
+                            ui.horizontal(|ui| {
+                                ui.add_space(2.0);
+                                ui.label(RichText::new("D.MIX").color(w::TEAL).size(9.5));
+                                if ui
+                                    .add(egui::Slider::new(&mut self.delay_mix_v, 0.0..=1.0).show_value(false))
+                                    .on_hover_text("延遲濕量")
+                                    .changed()
+                                {
+                                    self.delay_mix.set(self.delay_mix_v);
+                                }
+                                ui.add_space(6.0);
+                                if w::led_toggle(ui, "SYNC", self.delay_sync, w::TEAL).clicked() {
+                                    self.delay_sync = !self.delay_sync;
+                                }
+                                ui.add_enabled_ui(self.delay_sync, |ui| {
+                                    egui::ComboBox::from_id_salt("delay_div")
+                                        .width(72.0)
+                                        .selected_text(RichText::new(self.delay_div.label()).size(10.0).color(w::TEXT))
+                                        .show_ui(ui, |ui| {
+                                            for d in NoteDiv::ALL {
+                                                ui.selectable_value(&mut self.delay_div, d, d.label());
+                                            }
+                                        });
+                                });
+                                ui.label(RichText::new(format!("{:.0}ms", self.delay_effective_ms())).color(w::FAINT).size(9.5));
                             });
                             ui.add_space(6.0);
                             // ── 開關列（訊號順序：閘 → 破音 → 音箱 → cab → 殘響）──
@@ -653,6 +854,11 @@ impl eframe::App for RigApp {
                                 if w::led_toggle(ui, "CAB", self.cab_on, w::MAGENTA).clicked() {
                                     self.cab_on = !self.cab_on;
                                     self.cab_on_p.set(if self.cab_on { 1.0 } else { 0.0 });
+                                }
+                                ui.add_space(4.0);
+                                if w::led_toggle(ui, "DELAY", self.delay_on, w::TEAL).clicked() {
+                                    self.delay_on = !self.delay_on;
+                                    self.delay_on_p.set(if self.delay_on { 1.0 } else { 0.0 });
                                 }
                                 ui.add_space(4.0);
                                 if w::led_toggle(ui, "REVERB", self.reverb_on, w::GREEN).clicked() {
@@ -714,6 +920,10 @@ impl eframe::App for RigApp {
                         });
                     });
                 });
+                ui.add_space(12.0);
+
+                // ── 節拍 / 練習卡 ──
+                self.tempo_card(ui);
                 ui.add_space(18.0);
 
                 // ── 播放鍵 ──
