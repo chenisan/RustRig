@@ -16,15 +16,15 @@ use rustrig_audio::{
 };
 use rustrig_dsp::{
     CabIr, Chain, Compressor, Delay, Drive, Gain, Gate, MeterHandle, Metronome, Nam, PeakMeter,
-    Reverb, SharedParam,
+    PitchHandle, Reverb, SharedParam, Tuner,
 };
 use widgets as w;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([480.0, 1020.0])
-            .with_min_inner_size([450.0, 880.0]),
+            .with_inner_size([480.0, 1085.0])
+            .with_min_inner_size([450.0, 900.0]),
         ..Default::default()
     };
     eframe::run_native(
@@ -51,6 +51,11 @@ struct RigApp {
     // ── 輸入增益（前級，鏈最前面）──
     input_db_v: f32,
     input_gain: SharedParam,
+
+    // ── 調音器（輸入增益後、閘前；唯讀）──
+    tuner_on: bool,
+    tuner_on_p: SharedParam,
+    pitch: PitchHandle,
 
     // ── 雜訊閘（破音前）──
     gate_v: f32, // 0..1 強度
@@ -153,6 +158,22 @@ fn tone_norm_to_hz(norm: f32) -> f32 {
     500.0 * 10f32.powf(norm.clamp(0.0, 1.0))
 }
 
+/// 基頻 Hz → (音名含八度, 與標準音差的 cents)。hz<=0 回 ("—", 0)。
+fn hz_to_note(hz: f32) -> (String, f32) {
+    if hz <= 0.0 {
+        return ("—".into(), 0.0);
+    }
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    let midi = 69.0 + 12.0 * (hz / 440.0).log2();
+    let nearest = midi.round();
+    let cents = (midi - nearest) * 100.0;
+    let idx = (((nearest as i32) % 12) + 12) % 12;
+    let octave = (nearest as i32) / 12 - 1;
+    (format!("{}{}", NAMES[idx as usize], octave), cents)
+}
+
 /// delay 同步音符。factor × 四分音符時值 = 延遲時間。
 #[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 enum NoteDiv {
@@ -245,6 +266,9 @@ impl RigApp {
             clip_until: None,
             input_db_v: 0.0,
             input_gain: SharedParam::new(1.0),
+            tuner_on: false,
+            tuner_on_p: SharedParam::new(0.0),
+            pitch: PitchHandle::new(),
             gate_v: 0.0,
             gate_amt: SharedParam::new(0.0),
             gate_on_p: SharedParam::new(0.0),
@@ -305,8 +329,12 @@ impl RigApp {
 
     fn start(&mut self) {
         let mut chain = Chain::new();
-        // 訊號鏈：輸入增益 → 閘 → 壓縮 → 破音 → NAM 音箱 → cab → 延遲 → 殘響 → 音量 → 節拍器 → 峰值表
+        // 訊號鏈：輸入增益 → 調音器 → 閘 → 壓縮 → 破音 → NAM 音箱 → cab → 延遲 → 殘響 → 音量 → 節拍器 → 峰值表
         chain.push(Box::new(Gain::new(self.input_gain.clone())));
+        chain.push(Box::new(Tuner::new(
+            self.tuner_on_p.clone(),
+            self.pitch.clone(),
+        )));
         chain.push(Box::new(Gate::new(
             self.gate_amt.clone(),
             self.gate_on_p.clone(),
@@ -420,6 +448,92 @@ impl RigApp {
                 self.bpm_v = (60.0 * intervals / span).clamp(40.0, 240.0);
             }
         }
+    }
+
+    /// 調音器卡：LED 開關 + 大音名 + cents 指針條 + Hz/cents 讀數。
+    fn tuner_card(&mut self, ui: &mut egui::Ui) {
+        panel_frame().show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if w::led_toggle(ui, "TUNER", self.tuner_on, w::CYAN).clicked() {
+                    self.tuner_on = !self.tuner_on;
+                    self.tuner_on_p.set(if self.tuner_on { 1.0 } else { 0.0 });
+                }
+                ui.add_space(8.0);
+
+                let hz = if self.tuner_on { self.pitch.read() } else { 0.0 };
+                let (name, cents) = hz_to_note(hz);
+                let in_tune = hz > 0.0 && cents.abs() < 5.0;
+
+                // 大音名
+                let name_col = if hz <= 0.0 {
+                    w::DIM
+                } else if in_tune {
+                    w::GREEN
+                } else {
+                    w::TEXT
+                };
+                ui.label(RichText::new(name).color(name_col).size(26.0).monospace());
+                ui.add_space(8.0);
+
+                // cents 指針條
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(150.0, 28.0), egui::Sense::hover());
+                let painter = ui.painter().clone();
+                let cy = rect.center().y;
+                let left = rect.left() + 6.0;
+                let right = rect.right() - 6.0;
+                let cx = (left + right) / 2.0;
+                let halfspan = (right - left) / 2.0;
+                painter.line_segment(
+                    [egui::pos2(left, cy), egui::pos2(right, cy)],
+                    Stroke::new(1.0, w::FAINT),
+                );
+                for f in [-1.0f32, -0.5, 0.5, 1.0] {
+                    let x = cx + f * halfspan;
+                    painter.line_segment(
+                        [egui::pos2(x, cy - 4.0), egui::pos2(x, cy + 4.0)],
+                        Stroke::new(1.0, w::FAINT),
+                    );
+                }
+                // 中央準點（綠）
+                painter.line_segment(
+                    [egui::pos2(cx, cy - 9.0), egui::pos2(cx, cy + 9.0)],
+                    Stroke::new(1.5, w::GREEN),
+                );
+                // 指針
+                if hz > 0.0 {
+                    let frac = (cents / 50.0).clamp(-1.0, 1.0);
+                    let x = cx + frac * halfspan;
+                    let col = if in_tune { w::GREEN } else { w::AMBER };
+                    painter.circle_filled(egui::pos2(x, cy - 9.0), 4.0, col);
+                    painter.circle_filled(egui::pos2(x, cy - 9.0), 7.0, w::with_alpha(col, 60));
+                }
+
+                // 讀數
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if hz > 0.0 {
+                        ui.label(
+                            RichText::new(format!("{cents:+.0}¢"))
+                                .color(if in_tune { w::GREEN } else { w::DIM })
+                                .size(11.0)
+                                .monospace(),
+                        );
+                        ui.label(
+                            RichText::new(format!("{hz:.1} Hz"))
+                                .color(w::DIM)
+                                .size(11.0)
+                                .monospace(),
+                        );
+                    } else {
+                        ui.label(
+                            RichText::new(if self.tuner_on { "彈一個音…" } else { "關閉" })
+                                .color(w::FAINT)
+                                .size(10.0),
+                        );
+                    }
+                });
+            });
+        });
     }
 
     /// 節拍 / 練習卡：節拍器開關 + BPM + Tap + 音量。BPM 與 delay sync 共用。
@@ -891,6 +1005,10 @@ impl eframe::App for RigApp {
 
                 // ── 裝置選擇卡 ──
                 self.device_card(ui);
+                ui.add_space(8.0);
+
+                // ── 調音器卡 ──
+                self.tuner_card(ui);
                 ui.add_space(12.0);
 
                 // ── 主面板：channel strip + 旋鈕區 ──

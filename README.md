@@ -14,7 +14,7 @@
 
 > 設計製作 · **Isan（13soul）** — 全端設計工程師 · 影像及音樂創作人
 
-> ⚠️ **早期版（alpha）**：效果鏈已含 gate / comp / drive / **NAM 擴大機** / cab IR / delay / reverb 與節拍器、預設存讀，低延遲框架穩定。NAM 與 IR 需自備檔案（見下）。各效果仍在調音中，歡迎回饋。
+> ⚠️ **早期版（alpha）**：效果鏈已含調音器 / gate / comp / drive / **NAM 擴大機** / cab IR / delay / reverb 與節拍器、預設存讀，低延遲框架穩定。NAM 與 IR 需自備檔案（見下）。各效果仍在調音中，歡迎回饋。
 
 ---
 
@@ -24,7 +24,8 @@
   - **WASAPI 共享** — 免設定、相容性最好（延遲較高，約 60ms+）
   - **WASAPI 獨佔** — 繞過 Windows 音訊引擎，個位數～十幾 ms（實測 RME UCX II ~12ms）
   - **ASIO** — 專業驅動直連，最低延遲 3-7ms（需自行從原始碼編譯，見下）
-- **效果鏈**（訊號順序）：`GATE 雜訊閘 → COMP 壓縮 → DRIVE 破音 → AMP(NAM) → CAB 箱體 IR → DELAY 延遲 → REVERB 殘響 → 音量 → 節拍器`
+- **TUNER 調音器**：YIN 基頻偵測（降採樣，吉他 ~46–1400Hz），顯示音名 + cents 偏移，唯讀不影響音色
+- **效果鏈**（訊號順序）：`TUNER 調音器 → GATE 雜訊閘 → COMP 壓縮 → DRIVE 破音 → AMP(NAM) → CAB 箱體 IR → DELAY 延遲 → REVERB 殘響 → 音量 → 節拍器`
   - **GATE**：高增益消底噪用的雜訊閘（快開慢關 + 遲滯）
   - **COMP**：feed-forward 壓縮，單鈕帶動門檻 + 比例，軟膝、快攻慢放，可補償增益
   - **DRIVE / TONE**：4× 升頻非對稱 soft-clip 破音 + 二階 TONE 低通

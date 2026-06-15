@@ -15,6 +15,7 @@ pub mod gate;
 pub mod metro;
 pub mod nam;
 pub mod reverb;
+pub mod tuner;
 
 pub use cab::CabIr;
 pub use comp::Compressor;
@@ -24,6 +25,7 @@ pub use gate::Gate;
 pub use metro::Metronome;
 pub use nam::Nam;
 pub use reverb::Reverb;
+pub use tuner::Tuner;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -133,6 +135,27 @@ impl MeterHandle {
     /// 非負 IEEE float 的位元序與數值序一致，可直接用整數 `fetch_max`。
     fn accumulate(&self, peak: f32) {
         self.0.fetch_max(peak.to_bits(), Ordering::Relaxed);
+    }
+}
+
+/// 調音器的共享讀數：音訊執行緒寫入最新偵測到的基頻（Hz），GUI 取走。
+/// 0.0 = 目前無可信音高（沒彈 / 訊號太雜）。
+#[derive(Clone, Default)]
+pub struct PitchHandle(Arc<AtomicU32>);
+
+impl PitchHandle {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// GUI 端：讀目前偵測到的基頻（Hz，0 = 無）。
+    pub fn read(&self) -> f32 {
+        f32::from_bits(self.0.load(Ordering::Relaxed))
+    }
+
+    /// 音訊端：寫入最新偵測頻率。
+    fn set(&self, hz: f32) {
+        self.0.store(hz.to_bits(), Ordering::Relaxed);
     }
 }
 
