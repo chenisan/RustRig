@@ -154,7 +154,7 @@ fn tone_norm_to_hz(norm: f32) -> f32 {
 }
 
 /// delay 同步音符。factor × 四分音符時值 = 延遲時間。
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 enum NoteDiv {
     Quarter,      // ♩
     DottedEighth, // ♪.
@@ -185,6 +185,49 @@ impl NoteDiv {
             NoteDiv::Triplet => "♩3 1/4T",
         }
     }
+}
+
+/// 可存讀的效果鏈狀態（所有旋鈕 / 開關 / 拍速）。**不含** .nam / IR 檔，只存參數；
+/// 載入後既有的 AMP/CAB 模型沿用，只套用開關狀態。
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Preset {
+    input_db: f32,
+    volume: f32, // 線性
+    gate_amt: f32,
+    gate_on: bool,
+    comp: f32,
+    makeup_db: f32,
+    comp_on: bool,
+    drive_db: f32,
+    tone_norm: f32,
+    drive_on: bool,
+    nam_on: bool,
+    cab_on: bool,
+    delay_time: f32,
+    delay_fb: f32,
+    delay_mix: f32,
+    delay_on: bool,
+    delay_sync: bool,
+    delay_div: NoteDiv,
+    reverb: f32,
+    reverb_on: bool,
+    bpm: f32,
+    metro_level: f32,
+    metro_on: bool,
+}
+
+#[inline]
+fn b2f(b: bool) -> f32 {
+    if b { 1.0 } else { 0.0 }
+}
+
+/// 預設目錄 %APPDATA%\RustRig\presets（取不到 APPDATA 時退回當前目錄）。
+fn preset_dir() -> std::path::PathBuf {
+    let base = std::env::var_os("APPDATA")
+        .map(|a| std::path::PathBuf::from(a).join("RustRig").join("presets"))
+        .unwrap_or_else(|| std::path::PathBuf::from("presets"));
+    let _ = std::fs::create_dir_all(&base);
+    base
 }
 
 impl RigApp {
@@ -627,6 +670,134 @@ impl RigApp {
             Err(e) => self.error = Some(format!("IR 載入失敗：{e}")),
         }
     }
+
+    /// 蒐集目前狀態成 Preset。
+    fn to_preset(&self) -> Preset {
+        Preset {
+            input_db: self.input_db_v,
+            volume: self.vol_lin,
+            gate_amt: self.gate_v,
+            gate_on: self.gate_on,
+            comp: self.comp_v,
+            makeup_db: self.makeup_db_v,
+            comp_on: self.comp_on,
+            drive_db: self.drive_db_v,
+            tone_norm: self.tone_norm,
+            drive_on: self.drive_on,
+            nam_on: self.nam_on,
+            cab_on: self.cab_on,
+            delay_time: self.delay_time_v,
+            delay_fb: self.delay_fb_v,
+            delay_mix: self.delay_mix_v,
+            delay_on: self.delay_on,
+            delay_sync: self.delay_sync,
+            delay_div: self.delay_div,
+            reverb: self.reverb_v,
+            reverb_on: self.reverb_on,
+            bpm: self.bpm_v,
+            metro_level: self.metro_level_v,
+            metro_on: self.metro_on,
+        }
+    }
+
+    /// 套用 Preset：同步 mirror 欄位 + SharedParam，必要時無縫重啟引擎。
+    fn apply_preset(&mut self, p: Preset) {
+        self.input_db_v = p.input_db;
+        self.input_gain.set(w::db_to_gain(p.input_db));
+        self.vol_lin = p.volume;
+        self.volume.set(p.volume);
+
+        self.gate_v = p.gate_amt;
+        self.gate_amt.set(p.gate_amt);
+        self.gate_on = p.gate_on;
+        self.gate_on_p.set(b2f(p.gate_on));
+
+        self.comp_v = p.comp;
+        self.comp_amt.set(p.comp);
+        self.makeup_db_v = p.makeup_db;
+        self.comp_makeup.set(p.makeup_db);
+        self.comp_on = p.comp_on;
+        self.comp_on_p.set(b2f(p.comp_on));
+
+        self.drive_db_v = p.drive_db;
+        self.drive_db.set(p.drive_db);
+        self.tone_norm = p.tone_norm;
+        self.tone_hz.set(tone_norm_to_hz(p.tone_norm));
+        self.drive_on = p.drive_on;
+        self.drive_on_p.set(b2f(p.drive_on));
+
+        // AMP 只在已載模型時生效（取樣率切換靠重啟）
+        self.nam_on = p.nam_on && self.nam_json.is_some();
+        self.nam_on_p.set(b2f(self.nam_on));
+        self.cab_on = p.cab_on;
+        self.cab_on_p.set(b2f(p.cab_on));
+
+        self.delay_time_v = p.delay_time;
+        self.delay_fb_v = p.delay_fb;
+        self.delay_fb.set(p.delay_fb);
+        self.delay_mix_v = p.delay_mix;
+        self.delay_mix.set(p.delay_mix);
+        self.delay_on = p.delay_on;
+        self.delay_on_p.set(b2f(p.delay_on));
+        self.delay_sync = p.delay_sync;
+        self.delay_div = p.delay_div;
+
+        self.reverb_v = p.reverb;
+        self.reverb_mix.set(p.reverb);
+        self.reverb_on = p.reverb_on;
+        self.reverb_on_p.set(b2f(p.reverb_on));
+
+        self.bpm_v = p.bpm.clamp(40.0, 240.0);
+        self.bpm.set(self.bpm_v);
+        self.metro_level_v = p.metro_level;
+        self.metro_level.set(p.metro_level);
+        self.metro_on = p.metro_on;
+        self.metro_on_p.set(b2f(p.metro_on));
+
+        // 重建 chain（套用取樣率切換 + 確保開關結構一致）
+        self.restart_if_running();
+    }
+
+    fn save_preset(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("RustRig 預設", &["json"])
+            .set_directory(preset_dir())
+            .set_file_name("preset.json")
+            .save_file()
+        else {
+            return;
+        };
+        match serde_json::to_string_pretty(&self.to_preset()) {
+            Ok(s) => {
+                if let Err(e) = std::fs::write(&path, s) {
+                    self.error = Some(format!("預設儲存失敗：{e}"));
+                } else {
+                    self.error = None;
+                }
+            }
+            Err(e) => self.error = Some(format!("預設序列化失敗：{e}")),
+        }
+    }
+
+    fn load_preset(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("RustRig 預設", &["json"])
+            .set_directory(preset_dir())
+            .pick_file()
+        else {
+            return;
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(s) => match serde_json::from_str::<Preset>(&s) {
+                Ok(p) => {
+                    self.apply_preset(p);
+                    self.error = None;
+                }
+                Err(e) => self.error = Some(format!("預設解析失敗：{e}")),
+            },
+            Err(e) => self.error = Some(format!("預設讀取失敗：{e}")),
+        }
+    }
 }
 
 /// 讀 IR wav：取第 0 聲道，int 格式正規化到 ±1.0。
@@ -943,6 +1114,28 @@ impl eframe::App for RigApp {
                         ("點擊啟動引擎", w::DIM)
                     };
                     ui.label(RichText::new(txt).color(col).size(11.0));
+                });
+
+                // ── 預設存讀 ──
+                ui.add_space(12.0);
+                ui.vertical_centered(|ui| {
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(RichText::new("儲存預設").size(10.5).color(w::VIOLET))
+                            .on_hover_text("把目前所有旋鈕 / 開關 / 拍速存成 .json")
+                            .clicked()
+                        {
+                            self.save_preset();
+                        }
+                        ui.add_space(6.0);
+                        if ui
+                            .button(RichText::new("載入預設").size(10.5).color(w::VIOLET))
+                            .on_hover_text("讀取 .json 預設（不含 .nam / IR 檔，沿用目前已載入的）")
+                            .clicked()
+                        {
+                            self.load_preset();
+                        }
+                    });
                 });
 
                 // ── footer ──

@@ -2923,6 +2923,8 @@ dependencies = [
  "rfd",
  "rustrig-audio",
  "rustrig-dsp",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
