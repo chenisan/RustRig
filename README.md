@@ -6,6 +6,14 @@
   用 Rust 寫的 Windows <b>獨立電吉他即時效果處理器</b>——低延遲音訊引擎 + 破音 / 箱體 IR / 雜訊閘 / 殘響，對標 Neural DSP 的 standalone 模式。
 </p>
 
+<p align="center">
+  <img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="license">
+  <img src="https://img.shields.io/badge/platform-Windows-lightgrey" alt="platform">
+  <img src="https://img.shields.io/badge/Rust%20%2B%20WASAPI%20%2F%20ASIO-informational" alt="stack">
+</p>
+
+> 設計製作 · **Isan（13soul）** — 全端設計工程師 · 影像及音樂創作人
+
 > ⚠️ **早期版（alpha）**：目前是「直通 + 破音 + cab IR + gate + reverb」的低延遲框架。**真正的擴大機模型（NAM / amp sim）還沒做**——破音目前是 amp 前的 boost，不是完整音箱。拿來試延遲、試 cab IR、試效果鏈沒問題，但別期待完整 amp 音色。歡迎回饋。
 
 ---
@@ -93,12 +101,24 @@ crates/
 即時鐵律：`AudioProcessor::process` 在音訊執行緒呼叫，禁止 allocation / lock / syscall。
 RT 保護：FTZ/DAZ denormal 歸零、MMCSS Pro Audio、lock-free SPSC ring（rtrb）。
 
-## 授權
+## 授權 · License
 
-- 程式碼以 **Apache License 2.0** 釋出（見 [LICENSE](LICENSE)）。
-- **ASIO** 是 Steinberg Media Technologies 的商標／專有 SDK；本 repo 不含 ASIO SDK，使用 ASIO 功能須自行取得 SDK 並遵守其授權。
-- 任何箱體 IR 檔的版權屬各自權利人，本專案不隨附、不轉散。
+程式碼以 **Apache License 2.0** 釋出（見 [LICENSE](LICENSE)）。
+RustRig's own source is released under **Apache-2.0** (see [LICENSE](LICENSE)).
 
-## 致謝
+- **ASIO** 是 Steinberg Media Technologies 的商標／專有 SDK；本 repo 與公開 binary 皆不含 ASIO SDK，使用 ASIO 功能須自行取得 SDK 並遵守其授權。
+- **NAM 模型權重**（`.nam`）與**箱體 IR**（`.wav`）版權屬各自權利人，本專案**不隨附、不轉散**，僅於執行期讀取你提供的檔案。
+- 第三方元件（ASIO SDK、nam-rs、各 Rust crate）的授權與來源見 [NOTICE.md](NOTICE.md)。
+  Third-party licenses and sources are listed in [NOTICE.md](NOTICE.md).
 
-Isan · 13soul ｜ 台灣
+---
+
+## 關於作者 · Author
+
+**Isan（13soul）** — 全端設計工程師 · 影像及音樂創作人 / full-stack design engineer · video & music creator
+
+- 官方網站 / Website · <https://www.poofone.com.tw/>
+- Threads · <https://www.threads.com/@isan1314558>
+- YouTube · <https://www.youtube.com/@13Neosoul>
+- Instagram · <https://www.instagram.com/isan1314558/>
+- Facebook 社團 / Group · <https://www.facebook.com/groups/26340062805675868>
